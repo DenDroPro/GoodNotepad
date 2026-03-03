@@ -69,7 +69,17 @@ enum class FolderIcon {
     BOOK,
     GAME,
     HOME,
-    CAR
+    CAR,
+    CROSS,
+    FLOWER,
+    MONEY,
+    RECEIPT,
+    STAR,
+    BABY,
+    CHURCH,
+    NATURE,
+    SCIENCE,
+    PHONE
 }
 
 enum class HighlightColor(val color: Color) {

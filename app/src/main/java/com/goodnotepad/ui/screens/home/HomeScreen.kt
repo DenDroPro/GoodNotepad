@@ -70,6 +70,16 @@ fun folderIconToVector(icon: FolderIcon): ImageVector = when (icon) {
     FolderIcon.GAME -> Icons.Filled.SportsEsports
     FolderIcon.HOME -> Icons.Filled.Home
     FolderIcon.CAR -> Icons.Filled.DirectionsCar
+    FolderIcon.CROSS -> Icons.Filled.Add
+    FolderIcon.FLOWER -> Icons.Filled.LocalFlorist
+    FolderIcon.MONEY -> Icons.Filled.CurrencyRuble
+    FolderIcon.RECEIPT -> Icons.Filled.Receipt
+    FolderIcon.STAR -> Icons.Filled.Star
+    FolderIcon.BABY -> Icons.Filled.ChildCare
+    FolderIcon.CHURCH -> Icons.Filled.Church
+    FolderIcon.NATURE -> Icons.Filled.Park
+    FolderIcon.SCIENCE -> Icons.Filled.Science
+    FolderIcon.PHONE -> Icons.Filled.Phone
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

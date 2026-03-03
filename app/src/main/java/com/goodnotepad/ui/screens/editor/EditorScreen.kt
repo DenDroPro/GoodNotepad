@@ -25,6 +25,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -142,7 +143,6 @@ fun EditorScreen(
 ) {
     val note by viewModel.currentNote.collectAsState()
     val context = LocalContext.current
-    val localDensity = LocalDensity.current
     val screenHeightDp = LocalConfiguration.current.screenHeightDp
 
     // State
@@ -164,6 +164,9 @@ fun EditorScreen(
     val charFormats = remember { mutableListOf<CharFormat>() }
     var formatVersion by remember { mutableIntStateOf(0) }
     var activeFormat by remember { mutableStateOf(CharFormat()) }
+
+    // Text layout result for drawing lines at exact positions
+    var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
 
     // Load note
     LaunchedEffect(noteId) {
@@ -356,7 +359,6 @@ fun EditorScreen(
                                 Icon(alignIcon, contentDescription = "Выравнивание", tint = AppTitle, modifier = Modifier.size(20.dp))
                             }
                             DropdownMenu(expanded = showAlignMenu, onDismissRequest = { showAlignMenu = false }) {
-                                // Header alignment section
                                 Text(
                                     "Выравнивание шапки",
                                     fontSize = 12.sp, color = Color(0xFF888888),
@@ -384,7 +386,6 @@ fun EditorScreen(
                                     }
                                 }
                                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                                // Text alignment section
                                 Text(
                                     "Выравнивание текста",
                                     fontSize = 12.sp, color = Color(0xFF888888),
@@ -429,7 +430,6 @@ fun EditorScreen(
                                 DropdownMenuItem(text = { Text("Цвет страницы") }, onClick = { showPageColorDialog = true; showMoreMenu = false }, leadingIcon = { Icon(Icons.Default.Palette, null) })
                                 DropdownMenuItem(text = { Text("Цвет шапки") }, onClick = { showHeaderColorDialog = true; showMoreMenu = false }, leadingIcon = { Icon(Icons.Default.ColorLens, null) })
                                 HorizontalDivider()
-                                // Font size slider - same format as line opacity
                                 Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
                                     Text("Размер шрифта: ${fontSize}sp", fontSize = 13.sp, color = Color(0xFF555555))
                                     Slider(
@@ -442,7 +442,6 @@ fun EditorScreen(
                                     )
                                 }
                                 HorizontalDivider()
-                                // Line opacity slider - per-note
                                 Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
                                     Text("Яркость линеек: ${(noteLineOpacity * 100).toInt()}%", fontSize = 13.sp, color = Color(0xFF555555))
                                     Slider(
@@ -481,7 +480,6 @@ fun EditorScreen(
                     IconButton(onClick = { toggleStrikethrough() }, modifier = Modifier.size(40.dp)) {
                         Text("S", textDecoration = TextDecoration.LineThrough, fontSize = 16.sp, color = if (isStrikethroughActive) Color(0xFFD2691E) else Color(0xFF555555))
                     }
-                    // Highlight menu
                     Box {
                         IconButton(onClick = { showHighlightMenu = !showHighlightMenu }, modifier = Modifier.size(40.dp)) {
                             Icon(Icons.Default.Highlight, contentDescription = "Маркер", tint = Color(0xFF555555), modifier = Modifier.size(20.dp))
@@ -506,7 +504,6 @@ fun EditorScreen(
                             }
                         }
                     }
-                    // Font size A-/A+ buttons
                     IconButton(onClick = { if (fontSize > 10) fontSize-- }, modifier = Modifier.size(40.dp)) {
                         Text("A-", fontSize = 14.sp, color = Color(0xFF555555))
                     }
@@ -569,11 +566,12 @@ fun EditorScreen(
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
         ) {
-            // Header area - clean, no lines
+            // Header area - clean, no lines, full width for alignment
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(if (headerColor != HeaderColor.NONE) headerColor.color else Color.Transparent)
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
             ) {
                 BasicTextField(
                     value = title,
@@ -583,7 +581,7 @@ fun EditorScreen(
                         color = Color(0xFF333333), textAlign = composeTitleTextAlign
                     ),
                     cursorBrush = SolidColor(Color(0xFFD2691E)),
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                    modifier = Modifier.fillMaxWidth(),
                     decorationBox = { innerTextField ->
                         Box(modifier = Modifier.fillMaxWidth()) {
                             if (title.isEmpty()) Text("Заголовок", style = TextStyle(fontWeight = FontWeight.Bold, fontSize = 22.sp, color = Color(0xFFBBBBBB), textAlign = composeTitleTextAlign), modifier = Modifier.fillMaxWidth())
@@ -595,75 +593,156 @@ fun EditorScreen(
 
             HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = Color(0x20000000))
 
-            // Content area with drawBehind for page lines
-            // Lines are drawn edge-to-edge, text has padding via .padding() AFTER drawBehind
-            BasicTextField(
-                value = displayValue,
-                onValueChange = { onContentChange(it) },
-                textStyle = TextStyle(
-                    fontSize = fontSize.sp,
-                    color = Color(0xFF333333),
-                    lineHeight = lineHeightSp,
-                    textAlign = composeTextAlign,
-                    platformStyle = PlatformTextStyle(includeFontPadding = false),
-                    lineHeightStyle = LineHeightStyle(
-                        alignment = LineHeightStyle.Alignment.Bottom,
-                        trim = LineHeightStyle.Trim.FirstLineTop
-                    )
-                ),
-                cursorBrush = SolidColor(Color(0xFFD2691E)),
+            // Content area - use onTextLayout to get ACTUAL line positions
+            // Then draw lines based on those positions
+            // NO horizontal padding on BasicTextField - text goes edge-to-edge for correct alignment
+            // Vertical padding only to offset from top
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .defaultMinSize(minHeight = screenHeightDp.dp)
-                    .drawBehind {
-                        // Line height in pixels - use the SAME sp value as TextStyle
-                        val lhPx = lineHeightSp.toPx()
-                        val padTopPx = 8.dp.toPx()
-                        val lineColor = Color.Black.copy(alpha = noteLineOpacity)
+            ) {
+                // Draw lines behind text using actual layout positions
+                val lineColor = Color.Black.copy(alpha = noteLineOpacity)
+                val currentTextLayout = textLayoutResult
+                val currentPageStyle = pageStyle
+                val lhSp = lineHeightSp
 
-                        when (pageStyle) {
-                            PageStyle.LINED -> {
-                                var y = padTopPx + lhPx
-                                while (y < size.height) {
-                                    drawLine(lineColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 0.8f)
-                                    y += lhPx
-                                }
-                            }
-                            PageStyle.GRID -> {
-                                var y = padTopPx + lhPx
-                                while (y < size.height) {
-                                    drawLine(lineColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 0.5f)
-                                    y += lhPx
-                                }
-                                var x = lhPx
-                                while (x < size.width) {
-                                    drawLine(lineColor, Offset(x, padTopPx), Offset(x, size.height), strokeWidth = 0.5f)
-                                    x += lhPx
-                                }
-                            }
-                            PageStyle.DOTTED -> {
-                                val dotColor = Color.Black.copy(alpha = (noteLineOpacity * 1.5f).coerceAtMost(1f))
-                                var y = padTopPx + lhPx
-                                while (y < size.height) {
-                                    var x = lhPx
-                                    while (x < size.width) {
-                                        drawCircle(dotColor, radius = 1.5f, center = Offset(x, y))
-                                        x += lhPx
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .drawBehind {
+                            val lhPx = lhSp.toPx()
+                            val padTopPx = 8.dp.toPx()
+
+                            if (currentTextLayout != null && currentTextLayout.lineCount > 0) {
+                                // Use ACTUAL line positions from text layout
+                                when (currentPageStyle) {
+                                    PageStyle.LINED -> {
+                                        // Draw a line at the bottom of each text line
+                                        for (i in 0 until currentTextLayout.lineCount) {
+                                            val lineBottom = currentTextLayout.getLineBottom(i) + padTopPx
+                                            drawLine(lineColor, Offset(0f, lineBottom), Offset(size.width, lineBottom), strokeWidth = 0.8f)
+                                        }
+                                        // Continue with calculated lines for empty space below text
+                                        val lastLineBottom = if (currentTextLayout.lineCount > 0) currentTextLayout.getLineBottom(currentTextLayout.lineCount - 1) + padTopPx else padTopPx
+                                        var y = lastLineBottom + lhPx
+                                        while (y < size.height) {
+                                            drawLine(lineColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 0.8f)
+                                            y += lhPx
+                                        }
                                     }
-                                    y += lhPx
+                                    PageStyle.GRID -> {
+                                        // Horizontal lines at actual text line positions
+                                        for (i in 0 until currentTextLayout.lineCount) {
+                                            val lineBottom = currentTextLayout.getLineBottom(i) + padTopPx
+                                            drawLine(lineColor, Offset(0f, lineBottom), Offset(size.width, lineBottom), strokeWidth = 0.5f)
+                                        }
+                                        val lastLineBottom = if (currentTextLayout.lineCount > 0) currentTextLayout.getLineBottom(currentTextLayout.lineCount - 1) + padTopPx else padTopPx
+                                        var y = lastLineBottom + lhPx
+                                        while (y < size.height) {
+                                            drawLine(lineColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 0.5f)
+                                            y += lhPx
+                                        }
+                                        // Vertical lines
+                                        var x = lhPx
+                                        while (x < size.width) {
+                                            drawLine(lineColor, Offset(x, padTopPx), Offset(x, size.height), strokeWidth = 0.5f)
+                                            x += lhPx
+                                        }
+                                    }
+                                    PageStyle.DOTTED -> {
+                                        val dotColor = Color.Black.copy(alpha = (noteLineOpacity * 1.5f).coerceAtMost(1f))
+                                        for (i in 0 until currentTextLayout.lineCount) {
+                                            val lineBottom = currentTextLayout.getLineBottom(i) + padTopPx
+                                            var x = lhPx
+                                            while (x < size.width) {
+                                                drawCircle(dotColor, radius = 1.5f, center = Offset(x, lineBottom))
+                                                x += lhPx
+                                            }
+                                        }
+                                        val lastLineBottom = if (currentTextLayout.lineCount > 0) currentTextLayout.getLineBottom(currentTextLayout.lineCount - 1) + padTopPx else padTopPx
+                                        var y = lastLineBottom + lhPx
+                                        while (y < size.height) {
+                                            var x = lhPx
+                                            while (x < size.width) {
+                                                drawCircle(dotColor, radius = 1.5f, center = Offset(x, y))
+                                                x += lhPx
+                                            }
+                                            y += lhPx
+                                        }
+                                    }
+                                    PageStyle.BLANK -> { /* no lines */ }
+                                }
+                            } else {
+                                // No text layout yet - use calculated positions
+                                when (currentPageStyle) {
+                                    PageStyle.LINED -> {
+                                        var y = padTopPx + lhPx
+                                        while (y < size.height) {
+                                            drawLine(lineColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 0.8f)
+                                            y += lhPx
+                                        }
+                                    }
+                                    PageStyle.GRID -> {
+                                        var y = padTopPx + lhPx
+                                        while (y < size.height) {
+                                            drawLine(lineColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 0.5f)
+                                            y += lhPx
+                                        }
+                                        var x = lhPx
+                                        while (x < size.width) {
+                                            drawLine(lineColor, Offset(x, padTopPx), Offset(x, size.height), strokeWidth = 0.5f)
+                                            x += lhPx
+                                        }
+                                    }
+                                    PageStyle.DOTTED -> {
+                                        val dotColor = Color.Black.copy(alpha = (noteLineOpacity * 1.5f).coerceAtMost(1f))
+                                        var y = padTopPx + lhPx
+                                        while (y < size.height) {
+                                            var x = lhPx
+                                            while (x < size.width) {
+                                                drawCircle(dotColor, radius = 1.5f, center = Offset(x, y))
+                                                x += lhPx
+                                            }
+                                            y += lhPx
+                                        }
+                                    }
+                                    PageStyle.BLANK -> { /* no lines */ }
                                 }
                             }
-                            PageStyle.BLANK -> { /* no lines */ }
+                        }
+                )
+
+                // Text field on top - NO horizontal padding so alignment works edge-to-edge
+                BasicTextField(
+                    value = displayValue,
+                    onValueChange = { onContentChange(it) },
+                    onTextLayout = { layoutResult -> textLayoutResult = layoutResult },
+                    textStyle = TextStyle(
+                        fontSize = fontSize.sp,
+                        color = Color(0xFF333333),
+                        lineHeight = lineHeightSp,
+                        textAlign = composeTextAlign,
+                        platformStyle = PlatformTextStyle(includeFontPadding = false),
+                        lineHeightStyle = LineHeightStyle(
+                            alignment = LineHeightStyle.Alignment.Bottom,
+                            trim = LineHeightStyle.Trim.FirstLineTop
+                        )
+                    ),
+                    cursorBrush = SolidColor(Color(0xFFD2691E)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = screenHeightDp.dp)
+                        .padding(vertical = 8.dp),
+                    decorationBox = { innerTextField ->
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            if (contentText.isEmpty()) Text("Начните писать...", style = TextStyle(fontSize = fontSize.sp, color = Color(0xFFBBBBBB), textAlign = composeTextAlign), modifier = Modifier.fillMaxWidth())
+                            innerTextField()
                         }
                     }
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                decorationBox = { innerTextField ->
-                    Box(modifier = Modifier.fillMaxWidth()) {
-                        if (contentText.isEmpty()) Text("Начните писать...", style = TextStyle(fontSize = fontSize.sp, color = Color(0xFFBBBBBB), textAlign = composeTextAlign), modifier = Modifier.fillMaxWidth())
-                        innerTextField()
-                    }
-                }
-            )
+                )
+            }
         }
     }
 

@@ -241,7 +241,7 @@ fun NoteListScreen(
         CreateNoteDialog(
             onDismiss = { showCreateNoteDialog = false },
             onCreate = { name, headerColor ->
-                viewModel.createNoteWithDetails(folderId = folderId, title = name, headerColor = headerColor) { }
+                viewModel.createNoteWithDetails(folderId = folderId, title = name, headerColor = headerColor) { noteId -> onNavigateToEditor(noteId) }
                 showCreateNoteDialog = false
             }
         )
