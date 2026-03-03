@@ -516,13 +516,26 @@ fun EditorScreen(
                 .verticalScroll(rememberScrollState())
         ) {
             // === TITLE ===
-            // Uses String overload of BasicTextField - textStyle.textAlign works reliably here
+            // No decorationBox! Placeholder is a separate overlay.
+            // This lets BasicTextField properly fill width and respect textAlign.
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(if (headerColor != HeaderColor.NONE) headerColor.color else Color.Transparent)
                     .padding(horizontal = 15.dp, vertical = 12.dp)
             ) {
+                if (titleText.isEmpty()) {
+                    Text(
+                        "\u0417\u0430\u0433\u043e\u043b\u043e\u0432\u043e\u043a",
+                        style = TextStyle(
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 22.sp,
+                            color = Color(0xFFBBBBBB),
+                            textAlign = composeTitleTextAlign
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
                 BasicTextField(
                     value = titleText,
                     onValueChange = { titleText = it },
@@ -533,24 +546,7 @@ fun EditorScreen(
                         textAlign = composeTitleTextAlign
                     ),
                     cursorBrush = SolidColor(Color(0xFFD2691E)),
-                    modifier = Modifier.fillMaxWidth(),
-                    decorationBox = { innerTextField ->
-                        Box(modifier = Modifier.fillMaxWidth()) {
-                            if (titleText.isEmpty()) {
-                                Text(
-                                    "\u0417\u0430\u0433\u043e\u043b\u043e\u0432\u043e\u043a",
-                                    style = TextStyle(
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 22.sp,
-                                        color = Color(0xFFBBBBBB),
-                                        textAlign = composeTitleTextAlign
-                                    ),
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                            }
-                            innerTextField()
-                        }
-                    }
+                    modifier = Modifier.fillMaxWidth()
                 )
             }
 
@@ -650,8 +646,21 @@ fun EditorScreen(
                         }
                 )
 
-                // Text input - plain TextFieldValue + VisualTransformation
-                // textStyle.textAlign controls alignment (works because no AnnotatedString interference)
+                // Text input - NO decorationBox! Placeholder is separate overlay.
+                // This lets BasicTextField properly fill width and respect textAlign.
+                if (contentText.isEmpty()) {
+                    Text(
+                        "\u041d\u0430\u0447\u043d\u0438\u0442\u0435 \u043f\u0438\u0441\u0430\u0442\u044c...",
+                        style = TextStyle(
+                            fontSize = fontSize.sp,
+                            color = Color(0xFFBBBBBB),
+                            textAlign = composeTextAlign
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 15.dp, vertical = 8.dp)
+                    )
+                }
                 BasicTextField(
                     value = displayValue,
                     onValueChange = { onContentChange(it) },
@@ -672,23 +681,7 @@ fun EditorScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = screenHeightDp.dp)
-                        .padding(horizontal = 15.dp, vertical = 8.dp),
-                    decorationBox = { innerTextField ->
-                        Box(modifier = Modifier.fillMaxWidth()) {
-                            if (contentText.isEmpty()) {
-                                Text(
-                                    "\u041d\u0430\u0447\u043d\u0438\u0442\u0435 \u043f\u0438\u0441\u0430\u0442\u044c...",
-                                    style = TextStyle(
-                                        fontSize = fontSize.sp,
-                                        color = Color(0xFFBBBBBB),
-                                        textAlign = composeTextAlign
-                                    ),
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                            }
-                            innerTextField()
-                        }
-                    }
+                        .padding(horizontal = 15.dp, vertical = 8.dp)
                 )
             }
         }
