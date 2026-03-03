@@ -21,11 +21,11 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.ParagraphStyle
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
@@ -47,6 +47,7 @@ import com.goodnotepad.data.*
 import com.goodnotepad.ui.NoteViewModel
 import com.goodnotepad.ui.screens.home.AppHeader
 import com.goodnotepad.ui.screens.home.AppTitle
+import kotlinx.coroutines.flow.first
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.roundToInt
@@ -119,70 +120,23 @@ fun deserializeFormats(json: String, textLength: Int): List<CharFormat> {
     return result
 }
 
-// Serialize per-line alignments: JSON object {"0":"CENTER","3":"RIGHT",...}
-fun serializeLineAlignments(alignments: Map<Int, TextAlign>): String {
-    if (alignments.isEmpty()) return ""
-    val obj = JSONObject()
-    alignments.forEach { (k, v) -> obj.put(k.toString(), v.name) }
-    return obj.toString()
-}
-
-fun deserializeLineAlignments(json: String): MutableMap<Int, TextAlign> {
-    val result = mutableMapOf<Int, TextAlign>()
-    if (json.isBlank()) return result
-    try {
-        val obj = JSONObject(json)
-        obj.keys().forEach { key ->
-            val idx = key.toIntOrNull() ?: return@forEach
-            val align = try { TextAlign.valueOf(obj.getString(key)) } catch (_: Exception) { TextAlign.LEFT }
-            result[idx] = align
-        }
-    } catch (_: Exception) {}
-    return result
-}
-
 /**
- * VisualTransformation that applies per-character formatting AND per-paragraph alignment.
+ * VisualTransformation that applies per-character formatting only (bold, italic, etc.)
+ * Does NOT apply ParagraphStyle to avoid line height issues and Enter jumping bugs.
  */
-class FormattingTransformation(
-    private val formats: List<CharFormat>,
-    private val text: String,
-    private val lineAlignments: Map<Int, TextAlign>,
-    private val defaultAlign: TextAlign
-) : VisualTransformation {
+class FormattingTransformation(private val formats: List<CharFormat>) : VisualTransformation {
     override fun filter(text: AnnotatedString): TransformedText {
         val formatted = buildAnnotatedString {
             append(text)
-            // Apply per-character span styles
-            if (formats.isNotEmpty()) {
-                val defaultFmt = CharFormat()
-                var i = 0
-                while (i < text.length && i < formats.size) {
-                    val fmt = formats[i]
-                    val start = i
-                    while (i < text.length && i < formats.size && formats[i] == fmt) i++
-                    if (fmt != defaultFmt) {
-                        addStyle(fmt.toSpanStyle(), start, i)
-                    }
-                }
-            }
-            // Apply per-paragraph alignment
-            val rawText = text.text
-            if (rawText.isNotEmpty()) {
-                val lines = rawText.split("\n")
-                var offset = 0
-                for ((lineIdx, line) in lines.withIndex()) {
-                    val lineStart = offset
-                    val lineEnd = (offset + line.length).coerceAtMost(rawText.length)
-                    val align = lineAlignments[lineIdx] ?: defaultAlign
-                    val composeAlign = when (align) {
-                        TextAlign.LEFT -> androidx.compose.ui.text.style.TextAlign.Start
-                        TextAlign.CENTER -> androidx.compose.ui.text.style.TextAlign.Center
-                        TextAlign.RIGHT -> androidx.compose.ui.text.style.TextAlign.End
-                        TextAlign.JUSTIFY -> androidx.compose.ui.text.style.TextAlign.Justify
-                    }
-                    addStyle(ParagraphStyle(textAlign = composeAlign), lineStart, (lineEnd + 1).coerceAtMost(rawText.length))
-                    offset = lineEnd + 1 // +1 for the \n
+            if (formats.isEmpty()) return@buildAnnotatedString
+            val defaultFmt = CharFormat()
+            var i = 0
+            while (i < text.length && i < formats.size) {
+                val fmt = formats[i]
+                val start = i
+                while (i < text.length && i < formats.size && formats[i] == fmt) i++
+                if (fmt != defaultFmt) {
+                    addStyle(fmt.toSpanStyle(), start, i)
                 }
             }
         }
@@ -194,8 +148,7 @@ class FormattingTransformation(
 data class UndoSnapshot(
     val text: String,
     val selection: TextRange,
-    val formats: List<CharFormat>,
-    val lineAlignments: Map<Int, TextAlign>
+    val formats: List<CharFormat>
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -209,7 +162,6 @@ fun EditorScreen(
     val context = LocalContext.current
     val screenHeightDp = LocalConfiguration.current.screenHeightDp
     val screenWidthDp = LocalConfiguration.current.screenWidthDp
-    val density = LocalDensity.current
 
     // State
     var titleText by remember { mutableStateOf("") }
@@ -225,16 +177,12 @@ fun EditorScreen(
     var noteLineOpacity by remember { mutableFloatStateOf(0.5f) }
     var isFavorite by remember { mutableStateOf(false) }
     var initialized by remember { mutableStateOf(false) }
-    var titleFontColor by remember { mutableStateOf(Color(0xFF333333)) }
-    var contentFontColor by remember { mutableStateOf(Color(0xFF333333)) }
+    var titleFontColorArgb by remember { mutableIntStateOf(0xFF333333.toInt()) }
+    var contentFontColorArgb by remember { mutableIntStateOf(0xFF333333.toInt()) }
 
     val charFormats = remember { mutableListOf<CharFormat>() }
     var formatVersion by remember { mutableIntStateOf(0) }
     var activeFormat by remember { mutableStateOf(CharFormat()) }
-
-    // Per-line alignment map: paragraph index -> alignment
-    val lineAlignments = remember { mutableStateMapOf<Int, TextAlign>() }
-    var alignVersion by remember { mutableIntStateOf(0) }
 
     var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
 
@@ -244,7 +192,7 @@ fun EditorScreen(
     var undoVersion by remember { mutableIntStateOf(0) }
 
     fun pushUndo() {
-        undoStack.add(UndoSnapshot(contentText, contentSelection, charFormats.toList(), lineAlignments.toMap()))
+        undoStack.add(UndoSnapshot(contentText, contentSelection, charFormats.toList()))
         if (undoStack.size > 50) undoStack.removeAt(0)
         redoStack.clear()
         undoVersion++
@@ -252,84 +200,71 @@ fun EditorScreen(
 
     fun performUndo() {
         if (undoStack.isEmpty()) return
-        redoStack.add(UndoSnapshot(contentText, contentSelection, charFormats.toList(), lineAlignments.toMap()))
+        redoStack.add(UndoSnapshot(contentText, contentSelection, charFormats.toList()))
         val snap = undoStack.removeAt(undoStack.lastIndex)
         contentText = snap.text
         contentSelection = snap.selection
         charFormats.clear()
         charFormats.addAll(snap.formats)
-        lineAlignments.clear()
-        lineAlignments.putAll(snap.lineAlignments)
         formatVersion++
-        alignVersion++
         undoVersion++
     }
 
     fun performRedo() {
         if (redoStack.isEmpty()) return
-        undoStack.add(UndoSnapshot(contentText, contentSelection, charFormats.toList(), lineAlignments.toMap()))
+        undoStack.add(UndoSnapshot(contentText, contentSelection, charFormats.toList()))
         val snap = redoStack.removeAt(redoStack.lastIndex)
         contentText = snap.text
         contentSelection = snap.selection
         charFormats.clear()
         charFormats.addAll(snap.formats)
-        lineAlignments.clear()
-        lineAlignments.putAll(snap.lineAlignments)
         formatVersion++
-        alignVersion++
         undoVersion++
     }
 
+    // Load note: single LaunchedEffect that waits for the correct note from Flow
     LaunchedEffect(noteId) {
         initialized = false
         titleText = ""
         contentText = ""
         charFormats.clear()
-        lineAlignments.clear()
         undoStack.clear()
         redoStack.clear()
         formatVersion++
-        alignVersion++
         undoVersion++
         viewModel.loadNote(noteId)
-    }
-
-    LaunchedEffect(note) {
-        note?.let {
-            if (!initialized) {
-                titleText = it.title
-                contentText = it.content
-                contentSelection = TextRange(it.content.length)
-                charFormats.clear()
-                charFormats.addAll(deserializeFormats(it.formatting, it.content.length))
-                lineAlignments.clear()
-                lineAlignments.putAll(deserializeLineAlignments(it.lineAlignments))
-                formatVersion++
-                alignVersion++
-                noteTheme = it.theme
-                pageStyle = it.pageStyle
-                headerColor = it.headerColor
-                fontSize = it.fontSize
-                textAlign = it.textAlign
-                titleTextAlign = it.titleTextAlign
-                noteLineOpacity = it.lineOpacity
-                isFavorite = it.isFavorite
-                titleFontColor = Color(it.titleFontColor)
-                contentFontColor = Color(it.contentFontColor)
-                initialized = true
-            }
+        // Wait until the correct note arrives in the flow
+        val loadedNote = viewModel.currentNote.first { it != null && it.id == noteId }
+        if (loadedNote != null && !initialized) {
+            titleText = loadedNote.title
+            contentText = loadedNote.content
+            contentSelection = TextRange(loadedNote.content.length)
+            charFormats.clear()
+            charFormats.addAll(deserializeFormats(loadedNote.formatting, loadedNote.content.length))
+            formatVersion++
+            noteTheme = loadedNote.theme
+            pageStyle = loadedNote.pageStyle
+            headerColor = loadedNote.headerColor
+            fontSize = loadedNote.fontSize
+            textAlign = loadedNote.textAlign
+            titleTextAlign = loadedNote.titleTextAlign
+            noteLineOpacity = loadedNote.lineOpacity
+            isFavorite = loadedNote.isFavorite
+            titleFontColorArgb = loadedNote.titleFontColor.toInt()
+            contentFontColorArgb = loadedNote.contentFontColor.toInt()
+            initialized = true
         }
     }
 
-    LaunchedEffect(titleText, contentText, textAlign, titleTextAlign, pageStyle, noteTheme, headerColor, fontSize, noteLineOpacity, formatVersion, alignVersion) {
+    // Save note when state changes
+    LaunchedEffect(titleText, contentText, textAlign, titleTextAlign, pageStyle, noteTheme, headerColor, fontSize, noteLineOpacity, formatVersion, titleFontColorArgb, contentFontColorArgb) {
         if (initialized) {
             note?.let {
                 viewModel.saveNote(it.copy(
                     title = titleText, content = contentText, preview = contentText.take(100),
                     formatting = serializeFormats(charFormats),
-                    lineAlignments = serializeLineAlignments(lineAlignments),
-                    titleFontColor = titleFontColor.value.toLong(),
-                    contentFontColor = contentFontColor.value.toLong(),
+                    titleFontColor = titleFontColorArgb,
+                    contentFontColor = contentFontColorArgb,
                     theme = noteTheme, pageStyle = pageStyle, headerColor = headerColor,
                     fontSize = fontSize, textAlign = textAlign, titleTextAlign = titleTextAlign,
                     lineOpacity = noteLineOpacity, isFavorite = isFavorite
@@ -355,6 +290,12 @@ fun EditorScreen(
         TextAlign.RIGHT -> androidx.compose.ui.text.style.TextAlign.End
         TextAlign.JUSTIFY -> androidx.compose.ui.text.style.TextAlign.Justify
     }
+    val composeTextAlign = when (textAlign) {
+        TextAlign.LEFT -> androidx.compose.ui.text.style.TextAlign.Start
+        TextAlign.CENTER -> androidx.compose.ui.text.style.TextAlign.Center
+        TextAlign.RIGHT -> androidx.compose.ui.text.style.TextAlign.End
+        TextAlign.JUSTIFY -> androidx.compose.ui.text.style.TextAlign.Justify
+    }
     val alignIcon = when (textAlign) {
         TextAlign.LEFT -> Icons.Default.FormatAlignLeft
         TextAlign.CENTER -> Icons.Default.FormatAlignCenter
@@ -364,98 +305,21 @@ fun EditorScreen(
 
     val lineHeightSp = (fontSize * 1.5f).sp
 
-    // Helper: find which paragraph index the cursor is at
-    fun getCursorParagraphIndex(): Int {
-        val pos = contentSelection.start.coerceIn(0, contentText.length)
-        return contentText.substring(0, pos).count { it == '\n' }
-    }
-
-    // Helper: find which paragraphs are selected
-    fun getSelectedParagraphRange(): IntRange {
-        val sel = contentSelection
-        val startPara = contentText.substring(0, sel.min.coerceIn(0, contentText.length)).count { it == '\n' }
-        val endPara = contentText.substring(0, sel.max.coerceIn(0, contentText.length)).count { it == '\n' }
-        return startPara..endPara
-    }
-
-    // Apply alignment to current line or selected lines
-    fun applyTextAlignment(align: TextAlign) {
-        textAlign = align // also set default for new lines
-        val sel = contentSelection
-        if (sel.collapsed) {
-            // Apply to current paragraph only
-            val paraIdx = getCursorParagraphIndex()
-            lineAlignments[paraIdx] = align
-        } else {
-            // Apply to all selected paragraphs
-            val range = getSelectedParagraphRange()
-            for (i in range) {
-                lineAlignments[i] = align
-            }
-        }
-        alignVersion++
-    }
-
-    // Plain TextFieldValue - alignment is via VisualTransformation ParagraphStyle
+    // Plain TextFieldValue
     val displayValue = TextFieldValue(
         text = contentText,
         selection = contentSelection,
         composition = contentComposition
     )
 
-    // Formatting + alignment via VisualTransformation
+    // Formatting via VisualTransformation (span styles only, no ParagraphStyle)
     val formatsSnapshot = remember(formatVersion) { charFormats.toList() }
-    val alignSnapshot = remember(alignVersion) { lineAlignments.toMap() }
-    val contentVisualTransformation = remember(formatsSnapshot, alignSnapshot, textAlign) {
-        FormattingTransformation(formatsSnapshot, contentText, alignSnapshot, textAlign)
+    val contentVisualTransformation = remember(formatsSnapshot) {
+        FormattingTransformation(formatsSnapshot)
     }
 
-    // Track if we're in the middle of programmatic text change
+    // Track programmatic text changes
     var isInternalChange by remember { mutableStateOf(false) }
-
-    // When text changes, adjust lineAlignments for inserted/removed lines
-    fun adjustLineAlignmentsForTextChange(oldText: String, newText: String, changePos: Int) {
-        val oldLines = oldText.split("\n")
-        val newLines = newText.split("\n")
-        val oldCount = oldLines.size
-        val newCount = newLines.size
-        if (oldCount == newCount) return // no paragraph change
-        // Find which paragraph the change is in
-        val changePara = oldText.substring(0, changePos.coerceIn(0, oldText.length)).count { it == '\n' }
-        if (newCount > oldCount) {
-            // Lines were added - shift alignments down
-            val added = newCount - oldCount
-            val newAlignments = mutableMapOf<Int, TextAlign>()
-            lineAlignments.forEach { (idx, align) ->
-                if (idx <= changePara) {
-                    newAlignments[idx] = align
-                } else {
-                    newAlignments[idx + added] = align
-                }
-            }
-            // New lines inherit current paragraph alignment
-            val currentAlign = lineAlignments[changePara] ?: textAlign
-            for (i in 1..added) {
-                newAlignments[changePara + i] = currentAlign
-            }
-            lineAlignments.clear()
-            lineAlignments.putAll(newAlignments)
-        } else {
-            // Lines were removed - shift alignments up
-            val removed = oldCount - newCount
-            val newAlignments = mutableMapOf<Int, TextAlign>()
-            lineAlignments.forEach { (idx, align) ->
-                if (idx <= changePara) {
-                    newAlignments[idx] = align
-                } else if (idx > changePara + removed) {
-                    newAlignments[idx - removed] = align
-                }
-            }
-            lineAlignments.clear()
-            lineAlignments.putAll(newAlignments)
-        }
-        alignVersion++
-    }
 
     fun onContentChange(newValue: TextFieldValue) {
         if (isInternalChange) return
@@ -463,7 +327,6 @@ fun EditorScreen(
         val newText = newValue.text
         if (newText != oldText) {
             pushUndo()
-            val changePos = newValue.selection.start
             if (newText.length > oldText.length) {
                 val insertLen = newText.length - oldText.length
                 val insertPos = (newValue.selection.start - insertLen).coerceIn(0, charFormats.size)
@@ -473,7 +336,6 @@ fun EditorScreen(
                 val deletePos = newValue.selection.start.coerceIn(0, charFormats.size)
                 repeat(deleteLen) { if (deletePos < charFormats.size) charFormats.removeAt(deletePos) }
             }
-            adjustLineAlignmentsForTextChange(oldText, newText, changePos)
             contentText = newText
             formatVersion++
         }
@@ -529,13 +391,13 @@ fun EditorScreen(
 
     // Dynamic separator: calculate how many chars fit in one line
     val separatorCharCount = remember(fontSize, screenWidthDp) {
-        // Available width = screen width - 30dp padding (15dp each side)
         val availableWidthDp = screenWidthDp - 30
-        // Approximate char width for box-drawing char at given font size
-        // At 14sp, one char is about 8dp wide; scale proportionally
         val charWidthDp = fontSize * 0.57f
         if (charWidthDp > 0) (availableWidthDp / charWidthDp).toInt().coerceIn(10, 200) else 50
     }
+
+    val titleFontColor = Color(titleFontColorArgb)
+    val contentFontColor = Color(contentFontColorArgb)
 
     Scaffold(
         topBar = {
@@ -563,30 +425,12 @@ fun EditorScreen(
                 actions = {
                     if (!showSearch) {
                         // Undo button
-                        IconButton(
-                            onClick = { performUndo() },
-                            enabled = undoStack.isNotEmpty(),
-                            modifier = Modifier.size(40.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.Undo,
-                                contentDescription = "\u041e\u0442\u043c\u0435\u043d\u0430",
-                                tint = if (undoStack.isNotEmpty()) AppTitle else Color(0xFFCCCCCC),
-                                modifier = Modifier.size(20.dp)
-                            )
+                        IconButton(onClick = { performUndo() }, enabled = undoStack.isNotEmpty(), modifier = Modifier.size(40.dp)) {
+                            Icon(Icons.Default.Undo, contentDescription = "\u041e\u0442\u043c\u0435\u043d\u0430", tint = if (undoStack.isNotEmpty()) AppTitle else Color(0xFFCCCCCC), modifier = Modifier.size(20.dp))
                         }
                         // Redo button
-                        IconButton(
-                            onClick = { performRedo() },
-                            enabled = redoStack.isNotEmpty(),
-                            modifier = Modifier.size(40.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.Redo,
-                                contentDescription = "\u0412\u043e\u0437\u0432\u0440\u0430\u0442",
-                                tint = if (redoStack.isNotEmpty()) AppTitle else Color(0xFFCCCCCC),
-                                modifier = Modifier.size(20.dp)
-                            )
+                        IconButton(onClick = { performRedo() }, enabled = redoStack.isNotEmpty(), modifier = Modifier.size(40.dp)) {
+                            Icon(Icons.Default.Redo, contentDescription = "\u0412\u043e\u0437\u0432\u0440\u0430\u0442", tint = if (redoStack.isNotEmpty()) AppTitle else Color(0xFFCCCCCC), modifier = Modifier.size(20.dp))
                         }
                         IconButton(onClick = { showSearch = true }, modifier = Modifier.size(40.dp)) {
                             Icon(Icons.Default.Search, contentDescription = "\u041f\u043e\u0438\u0441\u043a", tint = AppTitle, modifier = Modifier.size(20.dp))
@@ -604,12 +448,12 @@ fun EditorScreen(
                                     IconButton(onClick = { titleTextAlign = TextAlign.JUSTIFY; showAlignMenu = false }) { Icon(Icons.Default.FormatAlignJustify, null, tint = if (titleTextAlign == TextAlign.JUSTIFY) Color(0xFFD2691E) else Color(0xFF666666)) }
                                 }
                                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                                Text("\u0412\u044b\u0440\u0430\u0432\u043d\u0438\u0432\u0430\u043d\u0438\u0435 \u0442\u0435\u043a\u0441\u0442\u0430 (\u0441\u0442\u0440\u043e\u043a\u0430)", fontSize = 12.sp, color = Color(0xFF888888), modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
+                                Text("\u0412\u044b\u0440\u0430\u0432\u043d\u0438\u0432\u0430\u043d\u0438\u0435 \u0442\u0435\u043a\u0441\u0442\u0430", fontSize = 12.sp, color = Color(0xFF888888), modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
                                 Row(modifier = Modifier.padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                                    IconButton(onClick = { applyTextAlignment(TextAlign.LEFT); showAlignMenu = false }) { Icon(Icons.Default.FormatAlignLeft, null, tint = if (textAlign == TextAlign.LEFT) Color(0xFFD2691E) else Color(0xFF666666)) }
-                                    IconButton(onClick = { applyTextAlignment(TextAlign.CENTER); showAlignMenu = false }) { Icon(Icons.Default.FormatAlignCenter, null, tint = if (textAlign == TextAlign.CENTER) Color(0xFFD2691E) else Color(0xFF666666)) }
-                                    IconButton(onClick = { applyTextAlignment(TextAlign.RIGHT); showAlignMenu = false }) { Icon(Icons.Default.FormatAlignRight, null, tint = if (textAlign == TextAlign.RIGHT) Color(0xFFD2691E) else Color(0xFF666666)) }
-                                    IconButton(onClick = { applyTextAlignment(TextAlign.JUSTIFY); showAlignMenu = false }) { Icon(Icons.Default.FormatAlignJustify, null, tint = if (textAlign == TextAlign.JUSTIFY) Color(0xFFD2691E) else Color(0xFF666666)) }
+                                    IconButton(onClick = { textAlign = TextAlign.LEFT; showAlignMenu = false }) { Icon(Icons.Default.FormatAlignLeft, null, tint = if (textAlign == TextAlign.LEFT) Color(0xFFD2691E) else Color(0xFF666666)) }
+                                    IconButton(onClick = { textAlign = TextAlign.CENTER; showAlignMenu = false }) { Icon(Icons.Default.FormatAlignCenter, null, tint = if (textAlign == TextAlign.CENTER) Color(0xFFD2691E) else Color(0xFF666666)) }
+                                    IconButton(onClick = { textAlign = TextAlign.RIGHT; showAlignMenu = false }) { Icon(Icons.Default.FormatAlignRight, null, tint = if (textAlign == TextAlign.RIGHT) Color(0xFFD2691E) else Color(0xFF666666)) }
+                                    IconButton(onClick = { textAlign = TextAlign.JUSTIFY; showAlignMenu = false }) { Icon(Icons.Default.FormatAlignJustify, null, tint = if (textAlign == TextAlign.JUSTIFY) Color(0xFFD2691E) else Color(0xFF666666)) }
                                 }
                                 Spacer(modifier = Modifier.height(4.dp))
                             }
@@ -890,19 +734,14 @@ fun EditorScreen(
                         }
                 )
 
-                // Text input - NO decorationBox! Placeholder is separate overlay.
+                // Text input placeholder
                 if (contentText.isEmpty()) {
                     Text(
                         "\u041d\u0430\u0447\u043d\u0438\u0442\u0435 \u043f\u0438\u0441\u0430\u0442\u044c...",
                         style = TextStyle(
                             fontSize = fontSize.sp,
                             color = Color(0xFFBBBBBB),
-                            textAlign = when (textAlign) {
-                                TextAlign.LEFT -> androidx.compose.ui.text.style.TextAlign.Start
-                                TextAlign.CENTER -> androidx.compose.ui.text.style.TextAlign.Center
-                                TextAlign.RIGHT -> androidx.compose.ui.text.style.TextAlign.End
-                                TextAlign.JUSTIFY -> androidx.compose.ui.text.style.TextAlign.Justify
-                            }
+                            textAlign = composeTextAlign
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
@@ -918,6 +757,7 @@ fun EditorScreen(
                         fontSize = fontSize.sp,
                         color = contentFontColor,
                         lineHeight = lineHeightSp,
+                        textAlign = composeTextAlign,
                         platformStyle = PlatformTextStyle(includeFontPadding = false),
                         lineHeightStyle = LineHeightStyle(
                             alignment = LineHeightStyle.Alignment.Bottom,
@@ -946,17 +786,17 @@ fun EditorScreen(
     if (showTitleFontColorDialog) {
         FontColorDialog(
             title = "\u0426\u0432\u0435\u0442 \u0448\u0440\u0438\u0444\u0442\u0430 \u0448\u0430\u043f\u043a\u0438",
-            currentColor = titleFontColor,
+            currentColorArgb = titleFontColorArgb,
             onDismiss = { showTitleFontColorDialog = false },
-            onColorSelected = { titleFontColor = it; showTitleFontColorDialog = false }
+            onColorSelected = { titleFontColorArgb = it; showTitleFontColorDialog = false }
         )
     }
     if (showContentFontColorDialog) {
         FontColorDialog(
             title = "\u0426\u0432\u0435\u0442 \u0448\u0440\u0438\u0444\u0442\u0430 \u0442\u0435\u043a\u0441\u0442\u0430",
-            currentColor = contentFontColor,
+            currentColorArgb = contentFontColorArgb,
             onDismiss = { showContentFontColorDialog = false },
-            onColorSelected = { contentFontColor = it; showContentFontColorDialog = false }
+            onColorSelected = { contentFontColorArgb = it; showContentFontColorDialog = false }
         )
     }
 }
@@ -1018,12 +858,8 @@ fun EditorHeaderColorDialog(currentColor: HeaderColor, onDismiss: () -> Unit, on
         title = { Text("\u0426\u0432\u0435\u0442 \u0448\u0430\u043f\u043a\u0438") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                // "None" button
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier.size(40.dp).clip(CircleShape).background(Color(0xFFCCCCCC)),
-                        contentAlignment = Alignment.Center
-                    ) {
+                    Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(Color(0xFFCCCCCC)), contentAlignment = Alignment.Center) {
                         IconButton(onClick = { onColorSelected(HeaderColor.NONE) }) {
                             Icon(Icons.Default.Close, null, tint = Color.White, modifier = Modifier.size(18.dp))
                         }
@@ -1031,36 +867,20 @@ fun EditorHeaderColorDialog(currentColor: HeaderColor, onDismiss: () -> Unit, on
                     Spacer(Modifier.width(8.dp))
                     Text("\u0411\u0435\u0437 \u0446\u0432\u0435\u0442\u0430", fontSize = 14.sp, color = Color(0xFF666666))
                 }
-                // Pastel colors row
                 Text("\u041f\u0430\u0441\u0442\u0435\u043b\u044c\u043d\u044b\u0435", fontSize = 12.sp, color = Color(0xFF888888))
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
-                ) {
-                    val pastelColors = HeaderColor.entries.filter { it.name.startsWith("PASTEL") }
-                    pastelColors.forEach { color ->
-                        Box(
-                            modifier = Modifier.size(40.dp).clip(CircleShape).background(color.color),
-                            contentAlignment = Alignment.Center
-                        ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+                    HeaderColor.entries.filter { it.name.startsWith("PASTEL") }.forEach { color ->
+                        Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(color.color), contentAlignment = Alignment.Center) {
                             IconButton(onClick = { onColorSelected(color) }) {
                                 if (color == currentColor) Icon(Icons.Default.Check, null, tint = Color(0xFF555555), modifier = Modifier.size(18.dp))
                             }
                         }
                     }
                 }
-                // Vibrant colors row
                 Text("\u042f\u0440\u043a\u0438\u0435", fontSize = 12.sp, color = Color(0xFF888888))
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
-                ) {
-                    val vibrantColors = HeaderColor.entries.filter { it.name.startsWith("VIBRANT") }
-                    vibrantColors.forEach { color ->
-                        Box(
-                            modifier = Modifier.size(40.dp).clip(CircleShape).background(color.color),
-                            contentAlignment = Alignment.Center
-                        ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+                    HeaderColor.entries.filter { it.name.startsWith("VIBRANT") }.forEach { color ->
+                        Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(color.color), contentAlignment = Alignment.Center) {
                             IconButton(onClick = { onColorSelected(color) }) {
                                 if (color == currentColor) Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(18.dp))
                             }
@@ -1074,19 +894,20 @@ fun EditorHeaderColorDialog(currentColor: HeaderColor, onDismiss: () -> Unit, on
 }
 
 @Composable
-fun FontColorDialog(title: String, currentColor: Color, onDismiss: () -> Unit, onColorSelected: (Color) -> Unit) {
+fun FontColorDialog(title: String, currentColorArgb: Int, onDismiss: () -> Unit, onColorSelected: (Int) -> Unit) {
+    data class ColorOption(val argb: Int, val label: String)
     val colors = listOf(
-        Color(0xFF333333) to "\u0427\u0451\u0440\u043d\u044b\u0439",
-        Color(0xFF555555) to "\u0422\u0451\u043c\u043d\u043e-\u0441\u0435\u0440\u044b\u0439",
-        Color(0xFF888888) to "\u0421\u0435\u0440\u044b\u0439",
-        Color(0xFF5D4037) to "\u041a\u043e\u0440\u0438\u0447\u043d\u0435\u0432\u044b\u0439",
-        Color(0xFFD32F2F) to "\u041a\u0440\u0430\u0441\u043d\u044b\u0439",
-        Color(0xFF1976D2) to "\u0421\u0438\u043d\u0438\u0439",
-        Color(0xFF388E3C) to "\u0417\u0435\u043b\u0451\u043d\u044b\u0439",
-        Color(0xFF7B1FA2) to "\u0424\u0438\u043e\u043b\u0435\u0442\u043e\u0432\u044b\u0439",
-        Color(0xFFE65100) to "\u041e\u0440\u0430\u043d\u0436\u0435\u0432\u044b\u0439",
-        Color(0xFF00695C) to "\u0411\u0438\u0440\u044e\u0437\u043e\u0432\u044b\u0439",
-        Color(0xFFFFFFFF) to "\u0411\u0435\u043b\u044b\u0439"
+        ColorOption(0xFF333333.toInt(), "\u0427\u0451\u0440\u043d\u044b\u0439"),
+        ColorOption(0xFF555555.toInt(), "\u0422\u0451\u043c\u043d\u043e-\u0441\u0435\u0440\u044b\u0439"),
+        ColorOption(0xFF888888.toInt(), "\u0421\u0435\u0440\u044b\u0439"),
+        ColorOption(0xFF5D4037.toInt(), "\u041a\u043e\u0440\u0438\u0447\u043d\u0435\u0432\u044b\u0439"),
+        ColorOption(0xFFD32F2F.toInt(), "\u041a\u0440\u0430\u0441\u043d\u044b\u0439"),
+        ColorOption(0xFF1976D2.toInt(), "\u0421\u0438\u043d\u0438\u0439"),
+        ColorOption(0xFF388E3C.toInt(), "\u0417\u0435\u043b\u0451\u043d\u044b\u0439"),
+        ColorOption(0xFF7B1FA2.toInt(), "\u0424\u0438\u043e\u043b\u0435\u0442\u043e\u0432\u044b\u0439"),
+        ColorOption(0xFFE65100.toInt(), "\u041e\u0440\u0430\u043d\u0436\u0435\u0432\u044b\u0439"),
+        ColorOption(0xFF00695C.toInt(), "\u0411\u0438\u0440\u044e\u0437\u043e\u0432\u044b\u0439"),
+        ColorOption(0xFFFFFFFF.toInt(), "\u0411\u0435\u043b\u044b\u0439")
     )
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1096,24 +917,25 @@ fun FontColorDialog(title: String, currentColor: Color, onDismiss: () -> Unit, o
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
             ) {
-                colors.forEach { (color, label) ->
+                colors.forEach { opt ->
+                    val c = Color(opt.argb)
                     Box(
                         modifier = Modifier
                             .size(40.dp)
                             .clip(CircleShape)
-                            .background(color)
+                            .background(c)
                             .then(
-                                if (color == Color(0xFFFFFFFF))
+                                if (opt.argb == 0xFFFFFFFF.toInt())
                                     Modifier.border(1.dp, Color(0xFFCCCCCC), CircleShape)
                                 else Modifier
                             ),
                         contentAlignment = Alignment.Center
                     ) {
-                        IconButton(onClick = { onColorSelected(color) }) {
-                            if (color == currentColor) {
+                        IconButton(onClick = { onColorSelected(opt.argb) }) {
+                            if (opt.argb == currentColorArgb) {
                                 Icon(
                                     Icons.Default.Check, null,
-                                    tint = if (color == Color(0xFFFFFFFF) || color == Color(0xFFFFEE58)) Color(0xFF333333) else Color.White,
+                                    tint = if (opt.argb == 0xFFFFFFFF.toInt()) Color(0xFF333333) else Color.White,
                                     modifier = Modifier.size(18.dp)
                                 )
                             }

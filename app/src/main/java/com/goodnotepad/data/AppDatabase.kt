@@ -36,8 +36,8 @@ abstract class AppDatabase : RoomDatabase() {
         val MIGRATION_3_4 = object : Migration(3, 4) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE notes ADD COLUMN lineAlignments TEXT NOT NULL DEFAULT ''")
-                db.execSQL("ALTER TABLE notes ADD COLUMN titleFontColor INTEGER NOT NULL DEFAULT ${0xFF333333}")
-                db.execSQL("ALTER TABLE notes ADD COLUMN contentFontColor INTEGER NOT NULL DEFAULT ${0xFF333333}")
+                db.execSQL("ALTER TABLE notes ADD COLUMN titleFontColor INTEGER NOT NULL DEFAULT ${0xFF333333.toInt()}")
+                db.execSQL("ALTER TABLE notes ADD COLUMN contentFontColor INTEGER NOT NULL DEFAULT ${0xFF333333.toInt()}")
             }
         }
 
