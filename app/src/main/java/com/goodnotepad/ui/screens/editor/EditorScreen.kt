@@ -1,6 +1,7 @@
 package com.goodnotepad.ui.screens.editor
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -119,8 +120,6 @@ fun deserializeFormats(json: String, textLength: Int): List<CharFormat> {
 /**
  * VisualTransformation that applies per-character formatting (bold, italic, etc.)
  * WITHOUT touching paragraph-level properties like textAlign.
- * This is the key fix: formatting goes through VisualTransformation,
- * alignment goes through textStyle.textAlign - they don't interfere.
  */
 class FormattingTransformation(private val formats: List<CharFormat>) : VisualTransformation {
     override fun filter(text: AnnotatedString): TransformedText {
@@ -141,6 +140,13 @@ class FormattingTransformation(private val formats: List<CharFormat>) : VisualTr
         return TransformedText(formatted, OffsetMapping.Identity)
     }
 }
+
+// Undo/Redo snapshot
+data class UndoSnapshot(
+    val text: String,
+    val selection: TextRange,
+    val formats: List<CharFormat>
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -174,12 +180,51 @@ fun EditorScreen(
 
     var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
 
+    // Undo/Redo stacks
+    val undoStack = remember { mutableListOf<UndoSnapshot>() }
+    val redoStack = remember { mutableListOf<UndoSnapshot>() }
+    var undoVersion by remember { mutableIntStateOf(0) }
+
+    fun pushUndo() {
+        undoStack.add(UndoSnapshot(contentText, contentSelection, charFormats.toList()))
+        if (undoStack.size > 50) undoStack.removeAt(0)
+        redoStack.clear()
+        undoVersion++
+    }
+
+    fun performUndo() {
+        if (undoStack.isEmpty()) return
+        redoStack.add(UndoSnapshot(contentText, contentSelection, charFormats.toList()))
+        val snap = undoStack.removeAt(undoStack.lastIndex)
+        contentText = snap.text
+        contentSelection = snap.selection
+        charFormats.clear()
+        charFormats.addAll(snap.formats)
+        formatVersion++
+        undoVersion++
+    }
+
+    fun performRedo() {
+        if (redoStack.isEmpty()) return
+        undoStack.add(UndoSnapshot(contentText, contentSelection, charFormats.toList()))
+        val snap = redoStack.removeAt(redoStack.lastIndex)
+        contentText = snap.text
+        contentSelection = snap.selection
+        charFormats.clear()
+        charFormats.addAll(snap.formats)
+        formatVersion++
+        undoVersion++
+    }
+
     LaunchedEffect(noteId) {
         initialized = false
         titleText = ""
         contentText = ""
         charFormats.clear()
+        undoStack.clear()
+        redoStack.clear()
         formatVersion++
+        undoVersion++
         viewModel.loadNote(noteId)
     }
 
@@ -262,22 +307,30 @@ fun EditorScreen(
         FormattingTransformation(formatsSnapshot)
     }
 
+    // Track if we're in the middle of programmatic text change
+    var isInternalChange by remember { mutableStateOf(false) }
+
     fun onContentChange(newValue: TextFieldValue) {
+        if (isInternalChange) return
         val oldText = contentText
         val newText = newValue.text
-        if (newText.length > oldText.length) {
-            val insertLen = newText.length - oldText.length
-            val insertPos = (newValue.selection.start - insertLen).coerceIn(0, charFormats.size)
-            repeat(insertLen) { charFormats.add(insertPos, activeFormat.copy()) }
-        } else if (newText.length < oldText.length) {
-            val deleteLen = oldText.length - newText.length
-            val deletePos = newValue.selection.start.coerceIn(0, charFormats.size)
-            repeat(deleteLen) { if (deletePos < charFormats.size) charFormats.removeAt(deletePos) }
+        if (newText != oldText) {
+            // Push undo before change
+            pushUndo()
+            if (newText.length > oldText.length) {
+                val insertLen = newText.length - oldText.length
+                val insertPos = (newValue.selection.start - insertLen).coerceIn(0, charFormats.size)
+                repeat(insertLen) { charFormats.add(insertPos, activeFormat.copy()) }
+            } else if (newText.length < oldText.length) {
+                val deleteLen = oldText.length - newText.length
+                val deletePos = newValue.selection.start.coerceIn(0, charFormats.size)
+                repeat(deleteLen) { if (deletePos < charFormats.size) charFormats.removeAt(deletePos) }
+            }
+            contentText = newText
+            formatVersion++
         }
-        contentText = newText
         contentSelection = newValue.selection
         contentComposition = newValue.composition
-        formatVersion++
     }
 
     fun toggleFmt(getter: (CharFormat) -> Boolean, setter: (CharFormat, Boolean) -> CharFormat) {
@@ -351,6 +404,32 @@ fun EditorScreen(
                 },
                 actions = {
                     if (!showSearch) {
+                        // Undo button
+                        IconButton(
+                            onClick = { performUndo() },
+                            enabled = undoStack.isNotEmpty(),
+                            modifier = Modifier.size(40.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Undo,
+                                contentDescription = "\u041e\u0442\u043c\u0435\u043d\u0430",
+                                tint = if (undoStack.isNotEmpty()) AppTitle else Color(0xFFCCCCCC),
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        // Redo button
+                        IconButton(
+                            onClick = { performRedo() },
+                            enabled = redoStack.isNotEmpty(),
+                            modifier = Modifier.size(40.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Redo,
+                                contentDescription = "\u0412\u043e\u0437\u0432\u0440\u0430\u0442",
+                                tint = if (redoStack.isNotEmpty()) AppTitle else Color(0xFFCCCCCC),
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                         IconButton(onClick = { showSearch = true }, modifier = Modifier.size(40.dp)) {
                             Icon(Icons.Default.Search, contentDescription = "\u041f\u043e\u0438\u0441\u043a", tint = AppTitle, modifier = Modifier.size(20.dp))
                         }
@@ -460,17 +539,21 @@ fun EditorScreen(
                         Text("A+", fontSize = 14.sp, color = Color(0xFF555555))
                     }
                     IconButton(onClick = {
+                        pushUndo()
                         val nl = if (contentText.endsWith("\n") || contentText.isEmpty()) "" else "\n"
                         val ins = nl + "\u2022 "
                         val pos = contentSelection.start.coerceIn(0, contentText.length)
+                        isInternalChange = true
                         contentText = contentText.substring(0, pos) + ins + contentText.substring(pos)
                         repeat(ins.length) { charFormats.add(pos.coerceIn(0, charFormats.size), CharFormat()) }
                         contentSelection = TextRange(pos + ins.length)
                         formatVersion++
+                        isInternalChange = false
                     }, modifier = Modifier.size(40.dp)) {
                         Icon(Icons.Default.FormatListBulleted, contentDescription = "\u0421\u043f\u0438\u0441\u043e\u043a", tint = Color(0xFF555555), modifier = Modifier.size(20.dp))
                     }
                     IconButton(onClick = {
+                        pushUndo()
                         val pos = contentSelection.start.coerceIn(0, contentText.length)
                         val textBefore = contentText.substring(0, pos)
                         val paragraphLines = textBefore.split("\n")
@@ -486,21 +569,26 @@ fun EditorScreen(
                         }
                         val nl = if (textBefore.endsWith("\n") || contentText.isEmpty()) "" else "\n"
                         val ins = nl + "${lastNum + 1}. "
+                        isInternalChange = true
                         contentText = contentText.substring(0, pos) + ins + contentText.substring(pos)
                         repeat(ins.length) { charFormats.add(pos.coerceIn(0, charFormats.size), CharFormat()) }
                         contentSelection = TextRange(pos + ins.length)
                         formatVersion++
+                        isInternalChange = false
                     }, modifier = Modifier.size(40.dp)) {
                         Icon(Icons.Default.FormatListNumbered, contentDescription = "\u041d\u0443\u043c\u0435\u0440\u043e\u0432\u0430\u043d\u043d\u044b\u0439", tint = Color(0xFF555555), modifier = Modifier.size(20.dp))
                     }
                     IconButton(onClick = {
+                        pushUndo()
                         val nl = if (contentText.endsWith("\n") || contentText.isEmpty()) "" else "\n"
-                        val ins = nl + "\u2500".repeat(16) + "\n"
+                        val ins = nl + "\u2500".repeat(50) + "\n"
                         val pos = contentSelection.start.coerceIn(0, contentText.length)
+                        isInternalChange = true
                         contentText = contentText.substring(0, pos) + ins + contentText.substring(pos)
                         repeat(ins.length) { charFormats.add(pos.coerceIn(0, charFormats.size), CharFormat()) }
                         contentSelection = TextRange(pos + ins.length)
                         formatVersion++
+                        isInternalChange = false
                     }, modifier = Modifier.size(40.dp)) {
                         Icon(Icons.Default.HorizontalRule, contentDescription = "\u041b\u0438\u043d\u0438\u044f", tint = Color(0xFF555555), modifier = Modifier.size(20.dp))
                     }
@@ -553,8 +641,6 @@ fun EditorScreen(
             HorizontalDivider(modifier = Modifier.padding(horizontal = 15.dp), color = Color(0x20000000))
 
             // === CONTENT ===
-            // KEY FIX: TextFieldValue with plain text (NOT annotatedString) +
-            // VisualTransformation for formatting. textStyle.textAlign controls alignment.
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -647,7 +733,6 @@ fun EditorScreen(
                 )
 
                 // Text input - NO decorationBox! Placeholder is separate overlay.
-                // This lets BasicTextField properly fill width and respect textAlign.
                 if (contentText.isEmpty()) {
                     Text(
                         "\u041d\u0430\u0447\u043d\u0438\u0442\u0435 \u043f\u0438\u0441\u0430\u0442\u044c...",
@@ -730,7 +815,7 @@ fun PageColorDialog(currentTheme: NoteTheme, onDismiss: () -> Unit, onThemeSelec
         onDismissRequest = onDismiss,
         title = { Text("\u0426\u0432\u0435\u0442 \u0441\u0442\u0440\u0430\u043d\u0438\u0446\u044b") },
         text = {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
                 NoteTheme.entries.forEach { theme ->
                     Box(
                         modifier = Modifier.size(36.dp).clip(CircleShape).background(theme.color)
@@ -754,15 +839,53 @@ fun EditorHeaderColorDialog(currentColor: HeaderColor, onDismiss: () -> Unit, on
         onDismissRequest = onDismiss,
         title = { Text("\u0426\u0432\u0435\u0442 \u0448\u0430\u043f\u043a\u0438") },
         text = {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                HeaderColor.entries.forEach { color ->
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                // "None" button
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(
-                        modifier = Modifier.size(40.dp).clip(CircleShape).background(if (color == HeaderColor.NONE) Color(0xFFCCCCCC) else color.color),
+                        modifier = Modifier.size(40.dp).clip(CircleShape).background(Color(0xFFCCCCCC)),
                         contentAlignment = Alignment.Center
                     ) {
-                        IconButton(onClick = { onColorSelected(color) }) {
-                            if (color == HeaderColor.NONE) Icon(Icons.Default.Close, null, tint = Color.White, modifier = Modifier.size(18.dp))
-                            else if (color == currentColor) Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(18.dp))
+                        IconButton(onClick = { onColorSelected(HeaderColor.NONE) }) {
+                            Icon(Icons.Default.Close, null, tint = Color.White, modifier = Modifier.size(18.dp))
+                        }
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text("\u0411\u0435\u0437 \u0446\u0432\u0435\u0442\u0430", fontSize = 14.sp, color = Color(0xFF666666))
+                }
+                // Pastel colors row
+                Text("\u041f\u0430\u0441\u0442\u0435\u043b\u044c\u043d\u044b\u0435", fontSize = 12.sp, color = Color(0xFF888888))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                ) {
+                    val pastelColors = HeaderColor.entries.filter { it.name.startsWith("PASTEL") }
+                    pastelColors.forEach { color ->
+                        Box(
+                            modifier = Modifier.size(40.dp).clip(CircleShape).background(color.color),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            IconButton(onClick = { onColorSelected(color) }) {
+                                if (color == currentColor) Icon(Icons.Default.Check, null, tint = Color(0xFF555555), modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    }
+                }
+                // Vibrant colors row
+                Text("\u042f\u0440\u043a\u0438\u0435", fontSize = 12.sp, color = Color(0xFF888888))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                ) {
+                    val vibrantColors = HeaderColor.entries.filter { it.name.startsWith("VIBRANT") }
+                    vibrantColors.forEach { color ->
+                        Box(
+                            modifier = Modifier.size(40.dp).clip(CircleShape).background(color.color),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            IconButton(onClick = { onColorSelected(color) }) {
+                                if (color == currentColor) Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(18.dp))
+                            }
                         }
                     }
                 }

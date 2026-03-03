@@ -41,10 +41,10 @@ fun NoteCard(
         else -> 12.sp
     }
     val previewFontSize = when (viewMode) {
-        ViewMode.GRID_5 -> 7.sp
-        ViewMode.GRID_4 -> 8.sp
-        ViewMode.GRID_3 -> 9.sp
-        else -> 10.sp
+        ViewMode.GRID_5 -> 6.sp
+        ViewMode.GRID_4 -> 7.sp
+        ViewMode.GRID_3 -> 8.sp
+        else -> 9.sp
     }
     val dateFontSize = when (viewMode) {
         ViewMode.GRID_5 -> 6.sp
@@ -53,10 +53,10 @@ fun NoteCard(
         else -> 9.sp
     }
     val previewMaxLines = when (viewMode) {
-        ViewMode.GRID_5 -> 4
-        ViewMode.GRID_4 -> 5
-        ViewMode.GRID_3 -> 6
-        else -> 8
+        ViewMode.GRID_5 -> 8
+        ViewMode.GRID_4 -> 10
+        ViewMode.GRID_3 -> 12
+        else -> 16
     }
     val iconSize = when (viewMode) {
         ViewMode.GRID_5 -> 8.dp
@@ -118,17 +118,19 @@ fun NoteCard(
                 }
             }
             HorizontalDivider(color = Color(0x15000000), thickness = 0.5.dp)
+            // Show full content as preview, scaled down to fit
             Column(
                 modifier = Modifier.fillMaxWidth().weight(1f).padding(horizontal = hPad, vertical = 2.dp)
             ) {
-                if (note.preview.isNotBlank()) {
+                val previewText = note.content.ifBlank { note.preview }
+                if (previewText.isNotBlank()) {
                     Text(
-                        text = note.preview,
+                        text = previewText,
                         fontSize = previewFontSize,
                         maxLines = previewMaxLines,
                         overflow = TextOverflow.Ellipsis,
-                        color = Color(0xFF888888),
-                        lineHeight = previewFontSize * 1.3f
+                        color = Color(0xFF555555),
+                        lineHeight = previewFontSize * 1.2f
                     )
                 }
             }
