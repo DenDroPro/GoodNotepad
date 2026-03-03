@@ -22,12 +22,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.goodnotepad.data.*
 import com.goodnotepad.ui.NoteViewModel
+import com.goodnotepad.ui.components.AppDrawerContent
 import com.goodnotepad.ui.components.NoteCard
 import com.goodnotepad.ui.components.NoteListItem
 import com.goodnotepad.ui.screens.home.AppBackground
 import com.goodnotepad.ui.screens.home.AppFab
 import com.goodnotepad.ui.screens.home.AppHeader
 import com.goodnotepad.ui.screens.home.AppTitle
+import kotlinx.coroutines.launch
 
 enum class NoteListType {
     FOLDER, ALL, FAVORITES, TRASH
@@ -41,7 +43,12 @@ fun NoteListScreen(
     folderId: Long = 0,
     title: String = "",
     onNavigateBack: () -> Unit,
-    onNavigateToEditor: (Long) -> Unit
+    onNavigateToEditor: (Long) -> Unit,
+    onNavigateToFolders: () -> Unit,
+    onNavigateToAllNotes: () -> Unit,
+    onNavigateToFavorites: () -> Unit,
+    onNavigateToTrash: () -> Unit,
+    onNavigateToSettings: () -> Unit
 ) {
     val sortMode by viewModel.sortMode.collectAsState()
     val viewMode by viewModel.viewMode.collectAsState()
@@ -62,6 +69,12 @@ fun NoteListScreen(
     var showContextMenu by remember { mutableStateOf<Note?>(null) }
     var showHeaderColorDialog by remember { mutableStateOf<Note?>(null) }
     var showMoveFolderDialog by remember { mutableStateOf<Note?>(null) }
+    // Issue #8: Dialog for creating new note
+    var showCreateNoteDialog by remember { mutableStateOf(false) }
+
+    // Issue #1: Drawer state
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
 
     val filteredNotes = if (searchQuery.isBlank()) sortedNotes
     else sortedNotes.filter {
@@ -70,213 +83,257 @@ fun NoteListScreen(
     }
 
     val screenTitle = when (listType) {
-        NoteListType.ALL -> "Все заметки"
-        NoteListType.FAVORITES -> "Избранное"
-        NoteListType.TRASH -> "Корзина"
+        NoteListType.ALL -> "\u0412\u0441\u0435 \u0437\u0430\u043c\u0435\u0442\u043a\u0438"
+        NoteListType.FAVORITES -> "\u0418\u0437\u0431\u0440\u0430\u043d\u043d\u043e\u0435"
+        NoteListType.TRASH -> "\u041a\u043e\u0440\u0437\u0438\u043d\u0430"
         NoteListType.FOLDER -> title
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    if (showSearch) {
-                        TextField(
-                            value = searchQuery,
-                            onValueChange = { searchQuery = it },
-                            placeholder = { Text("Поиск...") },
-                            singleLine = true,
-                            colors = TextFieldDefaults.colors(
-                                focusedContainerColor = Color.Transparent,
-                                unfocusedContainerColor = Color.Transparent
-                            ),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    } else {
-                        Text(
-                            text = screenTitle,
-                            fontWeight = FontWeight.Bold,
-                            color = AppTitle
-                        )
-                    }
-                },
-                navigationIcon = {
-                    if (showSearch) {
-                        IconButton(onClick = {
-                            showSearch = false
-                            searchQuery = ""
-                        }) {
-                            Icon(Icons.Default.Close, contentDescription = "Закрыть")
-                        }
-                    } else {
-                        IconButton(onClick = onNavigateBack) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = "Назад", tint = AppTitle)
-                        }
-                    }
-                },
-                actions = {
-                    if (!showSearch) {
-                        // View mode
-                        Box {
-                            IconButton(onClick = { showViewModeMenu = true }) {
-                                Icon(
-                                    if (viewMode == ViewMode.LIST) Icons.Default.ViewList
-                                    else Icons.Default.GridView,
-                                    contentDescription = "Вид",
-                                    tint = AppTitle
-                                )
-                            }
-                            DropdownMenu(
-                                expanded = showViewModeMenu,
-                                onDismissRequest = { showViewModeMenu = false }
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text("Список") },
-                                    onClick = { viewModel.setViewMode(ViewMode.LIST); showViewModeMenu = false },
-                                    leadingIcon = { Icon(Icons.Default.ViewList, null) }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Сетка 2x2") },
-                                    onClick = { viewModel.setViewMode(ViewMode.GRID_2); showViewModeMenu = false },
-                                    leadingIcon = { Icon(Icons.Default.GridView, null) }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Сетка 3x3") },
-                                    onClick = { viewModel.setViewMode(ViewMode.GRID_3); showViewModeMenu = false },
-                                    leadingIcon = { Icon(Icons.Default.GridView, null) }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Сетка 4x4") },
-                                    onClick = { viewModel.setViewMode(ViewMode.GRID_4); showViewModeMenu = false },
-                                    leadingIcon = { Icon(Icons.Default.GridView, null) }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Сетка 5x5") },
-                                    onClick = { viewModel.setViewMode(ViewMode.GRID_5); showViewModeMenu = false },
-                                    leadingIcon = { Icon(Icons.Default.GridView, null) }
-                                )
-                            }
-                        }
+    val selectedDrawerItem = when (listType) {
+        NoteListType.FOLDER -> "folders"
+        NoteListType.ALL -> "all_notes"
+        NoteListType.FAVORITES -> "favorites"
+        NoteListType.TRASH -> "trash"
+    }
 
-                        // Sort
-                        Box {
-                            IconButton(onClick = { showSortMenu = true }) {
-                                Icon(Icons.Default.Sort, contentDescription = "Сортировка", tint = AppTitle)
+    // Issue #1: Wrap in ModalNavigationDrawer
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            AppDrawerContent(
+                selectedItem = selectedDrawerItem,
+                onNavigateToFolders = {
+                    scope.launch { drawerState.close() }
+                    onNavigateToFolders()
+                },
+                onNavigateToAllNotes = {
+                    scope.launch { drawerState.close() }
+                    onNavigateToAllNotes()
+                },
+                onNavigateToFavorites = {
+                    scope.launch { drawerState.close() }
+                    onNavigateToFavorites()
+                },
+                onNavigateToTrash = {
+                    scope.launch { drawerState.close() }
+                    onNavigateToTrash()
+                },
+                onNavigateToSettings = {
+                    scope.launch { drawerState.close() }
+                    onNavigateToSettings()
+                }
+            )
+        }
+    ) {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = {
+                        if (showSearch) {
+                            TextField(
+                                value = searchQuery,
+                                onValueChange = { searchQuery = it },
+                                placeholder = { Text("\u041f\u043e\u0438\u0441\u043a...") },
+                                singleLine = true,
+                                colors = TextFieldDefaults.colors(
+                                    focusedContainerColor = Color.Transparent,
+                                    unfocusedContainerColor = Color.Transparent
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        } else {
+                            Text(
+                                text = screenTitle,
+                                fontWeight = FontWeight.Bold,
+                                color = AppTitle
+                            )
+                        }
+                    },
+                    navigationIcon = {
+                        if (showSearch) {
+                            IconButton(onClick = {
+                                showSearch = false
+                                searchQuery = ""
+                            }) {
+                                Icon(Icons.Default.Close, contentDescription = "\u0417\u0430\u043a\u0440\u044b\u0442\u044c")
                             }
-                            DropdownMenu(
-                                expanded = showSortMenu,
-                                onDismissRequest = { showSortMenu = false }
-                            ) {
-                                SortMode.entries.forEach { mode ->
+                        } else {
+                            IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                                Icon(Icons.Default.Menu, contentDescription = "\u041c\u0435\u043d\u044e", tint = AppTitle)
+                            }
+                        }
+                    },
+                    actions = {
+                        if (!showSearch) {
+                            Box {
+                                IconButton(onClick = { showViewModeMenu = true }) {
+                                    Icon(
+                                        if (viewMode == ViewMode.LIST) Icons.Default.ViewList
+                                        else Icons.Default.GridView,
+                                        contentDescription = "\u0412\u0438\u0434",
+                                        tint = AppTitle
+                                    )
+                                }
+                                DropdownMenu(
+                                    expanded = showViewModeMenu,
+                                    onDismissRequest = { showViewModeMenu = false }
+                                ) {
                                     DropdownMenuItem(
-                                        text = {
-                                            Text(
-                                                mode.label,
-                                                fontWeight = if (mode == sortMode) FontWeight.Bold else FontWeight.Normal
-                                            )
-                                        },
-                                        onClick = { viewModel.setSortMode(mode); showSortMenu = false }
+                                        text = { Text("\u0421\u043f\u0438\u0441\u043e\u043a") },
+                                        onClick = { viewModel.setViewMode(ViewMode.LIST); showViewModeMenu = false },
+                                        leadingIcon = { Icon(Icons.Default.ViewList, null) }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("\u0421\u0435\u0442\u043a\u0430 2x2") },
+                                        onClick = { viewModel.setViewMode(ViewMode.GRID_2); showViewModeMenu = false },
+                                        leadingIcon = { Icon(Icons.Default.GridView, null) }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("\u0421\u0435\u0442\u043a\u0430 3x3") },
+                                        onClick = { viewModel.setViewMode(ViewMode.GRID_3); showViewModeMenu = false },
+                                        leadingIcon = { Icon(Icons.Default.GridView, null) }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("\u0421\u0435\u0442\u043a\u0430 4x4") },
+                                        onClick = { viewModel.setViewMode(ViewMode.GRID_4); showViewModeMenu = false },
+                                        leadingIcon = { Icon(Icons.Default.GridView, null) }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("\u0421\u0435\u0442\u043a\u0430 5x5") },
+                                        onClick = { viewModel.setViewMode(ViewMode.GRID_5); showViewModeMenu = false },
+                                        leadingIcon = { Icon(Icons.Default.GridView, null) }
                                     )
                                 }
                             }
-                        }
 
-                        // Search
-                        IconButton(onClick = { showSearch = true }) {
-                            Icon(Icons.Default.Search, contentDescription = "Поиск", tint = AppTitle)
-                        }
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = AppHeader)
-            )
-        },
-        floatingActionButton = {
-            if (listType != NoteListType.TRASH) {
-                FloatingActionButton(
-                    onClick = {
-                        viewModel.createNote(
-                            folderId = if (listType == NoteListType.FOLDER) folderId else 0
-                        ) { noteId ->
-                            onNavigateToEditor(noteId)
+                            Box {
+                                IconButton(onClick = { showSortMenu = true }) {
+                                    Icon(Icons.Default.Sort, contentDescription = "\u0421\u043e\u0440\u0442\u0438\u0440\u043e\u0432\u043a\u0430", tint = AppTitle)
+                                }
+                                DropdownMenu(
+                                    expanded = showSortMenu,
+                                    onDismissRequest = { showSortMenu = false }
+                                ) {
+                                    SortMode.entries.forEach { mode ->
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    mode.label,
+                                                    fontWeight = if (mode == sortMode) FontWeight.Bold else FontWeight.Normal
+                                                )
+                                            },
+                                            onClick = { viewModel.setSortMode(mode); showSortMenu = false }
+                                        )
+                                    }
+                                }
+                            }
+
+                            IconButton(onClick = { showSearch = true }) {
+                                Icon(Icons.Default.Search, contentDescription = "\u041f\u043e\u0438\u0441\u043a", tint = AppTitle)
+                            }
                         }
                     },
-                    containerColor = AppFab,
-                    contentColor = Color.White
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = "Новая заметка")
-                }
-            }
-        },
-        containerColor = AppBackground
-    ) { padding ->
-        if (filteredNotes.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        Icons.Outlined.Description,
-                        contentDescription = null,
-                        modifier = Modifier.size(64.dp),
-                        tint = Color(0xFFBBBBBB)
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text("Нет заметок", fontSize = 18.sp, color = Color(0xFF999999))
-                    if (listType != NoteListType.TRASH) {
-                        Text("Нажмите + чтобы создать", fontSize = 14.sp, color = Color(0xFFBBBBBB))
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = AppHeader)
+                )
+            },
+            floatingActionButton = {
+                // Issue #10: FAB only for FOLDER type (files only exist in folders)
+                if (listType == NoteListType.FOLDER) {
+                    FloatingActionButton(
+                        onClick = { showCreateNoteDialog = true },
+                        containerColor = AppFab,
+                        contentColor = Color.White
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = "\u041d\u043e\u0432\u0430\u044f \u0437\u0430\u043c\u0435\u0442\u043a\u0430")
                     }
                 }
-            }
-        } else {
-            when (viewMode) {
-                ViewMode.LIST -> {
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(padding),
-                        contentPadding = PaddingValues(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        items(filteredNotes, key = { it.id }) { note ->
-                            NoteListItem(
-                                note = note,
-                                onClick = { onNavigateToEditor(note.id) },
-                                onLongClick = { showContextMenu = note }
-                            )
+            },
+            containerColor = AppBackground
+        ) { padding ->
+            if (filteredNotes.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            Icons.Outlined.Description,
+                            contentDescription = null,
+                            modifier = Modifier.size(64.dp),
+                            tint = Color(0xFFBBBBBB)
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text("\u041d\u0435\u0442 \u0437\u0430\u043c\u0435\u0442\u043e\u043a", fontSize = 18.sp, color = Color(0xFF999999))
+                        if (listType == NoteListType.FOLDER) {
+                            Text("\u041d\u0430\u0436\u043c\u0438\u0442\u0435 + \u0447\u0442\u043e\u0431\u044b \u0441\u043e\u0437\u0434\u0430\u0442\u044c", fontSize = 14.sp, color = Color(0xFFBBBBBB))
                         }
                     }
                 }
-                else -> {
-                    val columns = when (viewMode) {
-                        ViewMode.GRID_2 -> 2
-                        ViewMode.GRID_3 -> 3
-                        ViewMode.GRID_4 -> 4
-                        ViewMode.GRID_5 -> 5
-                        else -> 2
+            } else {
+                when (viewMode) {
+                    ViewMode.LIST -> {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(padding),
+                            contentPadding = PaddingValues(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            items(filteredNotes, key = { it.id }) { note ->
+                                NoteListItem(
+                                    note = note,
+                                    onClick = { onNavigateToEditor(note.id) },
+                                    onLongClick = { showContextMenu = note }
+                                )
+                            }
+                        }
                     }
-                    LazyVerticalGrid(
-                        columns = GridCells.Fixed(columns),
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(padding),
-                        contentPadding = PaddingValues(16.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        items(filteredNotes, key = { it.id }) { note ->
-                            NoteCard(
-                                note = note,
-                                onClick = { onNavigateToEditor(note.id) },
-                                onLongClick = { showContextMenu = note }
-                            )
+                    else -> {
+                        val columns = when (viewMode) {
+                            ViewMode.GRID_2 -> 2
+                            ViewMode.GRID_3 -> 3
+                            ViewMode.GRID_4 -> 4
+                            ViewMode.GRID_5 -> 5
+                            else -> 2
+                        }
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(columns),
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(padding),
+                            contentPadding = PaddingValues(8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            items(filteredNotes, key = { it.id }) { note ->
+                                NoteCard(
+                                    note = note,
+                                    onClick = { onNavigateToEditor(note.id) },
+                                    onLongClick = { showContextMenu = note }
+                                )
+                            }
                         }
                     }
                 }
             }
         }
+    }
+
+    // Issue #8: Create note dialog (name + header color)
+    if (showCreateNoteDialog) {
+        CreateNoteDialog(
+            onDismiss = { showCreateNoteDialog = false },
+            onCreate = { name, headerColor ->
+                viewModel.createNoteWithDetails(
+                    folderId = folderId,
+                    title = name,
+                    headerColor = headerColor
+                ) { /* note created, stays in list */ }
+                showCreateNoteDialog = false
+            }
+        )
     }
 
     // Context menu
@@ -298,6 +355,10 @@ fun NoteListScreen(
             NoteContextMenuDialog(
                 note = note,
                 onDismiss = { showContextMenu = null },
+                onOpen = {
+                    showContextMenu = null
+                    onNavigateToEditor(note.id)
+                },
                 onToggleFavorite = {
                     viewModel.toggleNoteFavorite(note.id)
                     showContextMenu = null
@@ -322,7 +383,6 @@ fun NoteListScreen(
         }
     }
 
-    // Header color dialog
     showHeaderColorDialog?.let { note ->
         HeaderColorDialog(
             currentColor = note.headerColor,
@@ -334,7 +394,6 @@ fun NoteListScreen(
         )
     }
 
-    // Move to folder dialog
     showMoveFolderDialog?.let { note ->
         val folders by viewModel.folders.collectAsState()
         MoveFolderDialog(
@@ -349,10 +408,69 @@ fun NoteListScreen(
     }
 }
 
+// Issue #8: Dialog to create new note with name and header color
+@Composable
+fun CreateNoteDialog(
+    onDismiss: () -> Unit,
+    onCreate: (String, HeaderColor) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var selectedColor by remember { mutableStateOf(HeaderColor.NONE) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("\u041d\u043e\u0432\u044b\u0439 \u0444\u0430\u0439\u043b") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("\u041d\u0430\u0437\u0432\u0430\u043d\u0438\u0435") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Text("\u0426\u0432\u0435\u0442 \u0448\u0430\u043f\u043a\u0438:", fontSize = 14.sp, color = Color(0xFF666666))
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    HeaderColor.entries.forEach { color ->
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (color == HeaderColor.NONE) Color(0xFFCCCCCC)
+                                    else color.color
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            IconButton(onClick = { selectedColor = color }) {
+                                if (color == HeaderColor.NONE && selectedColor == HeaderColor.NONE) {
+                                    Icon(Icons.Default.Close, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                                } else if (color == selectedColor) {
+                                    Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { if (name.isNotBlank()) onCreate(name, selectedColor) },
+                enabled = name.isNotBlank()
+            ) { Text("\u0421\u043e\u0437\u0434\u0430\u0442\u044c") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("\u041e\u0442\u043c\u0435\u043d\u0430") } }
+    )
+}
+
 @Composable
 fun NoteContextMenuDialog(
     note: Note,
     onDismiss: () -> Unit,
+    onOpen: () -> Unit,
     onToggleFavorite: () -> Unit,
     onTogglePin: () -> Unit,
     onChangeHeaderColor: () -> Unit,
@@ -361,9 +479,16 @@ fun NoteContextMenuDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(note.title.ifBlank { "Без заголовка" }) },
+        title = { Text(note.title.ifBlank { "\u0411\u0435\u0437 \u0437\u0430\u0433\u043e\u043b\u043e\u0432\u043a\u0430" }) },
         text = {
             Column {
+                TextButton(onClick = onOpen, modifier = Modifier.fillMaxWidth()) {
+                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(20.dp))
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text("\u041e\u0442\u043a\u0440\u044b\u0442\u044c")
+                    }
+                }
                 TextButton(onClick = onToggleFavorite, modifier = Modifier.fillMaxWidth()) {
                     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Icon(
@@ -371,41 +496,41 @@ fun NoteContextMenuDialog(
                             contentDescription = null, modifier = Modifier.size(20.dp)
                         )
                         Spacer(modifier = Modifier.width(12.dp))
-                        Text(if (note.isFavorite) "Убрать из избранного" else "Добавить в избранное")
+                        Text(if (note.isFavorite) "\u0423\u0431\u0440\u0430\u0442\u044c \u0438\u0437 \u0438\u0437\u0431\u0440\u0430\u043d\u043d\u043e\u0433\u043e" else "\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0432 \u0438\u0437\u0431\u0440\u0430\u043d\u043d\u043e\u0435")
                     }
                 }
                 TextButton(onClick = onTogglePin, modifier = Modifier.fillMaxWidth()) {
                     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.PushPin, contentDescription = null, modifier = Modifier.size(20.dp))
                         Spacer(modifier = Modifier.width(12.dp))
-                        Text(if (note.isPinned) "Открепить" else "Закрепить")
+                        Text(if (note.isPinned) "\u041e\u0442\u043a\u0440\u0435\u043f\u0438\u0442\u044c" else "\u0417\u0430\u043a\u0440\u0435\u043f\u0438\u0442\u044c")
                     }
                 }
                 TextButton(onClick = onChangeHeaderColor, modifier = Modifier.fillMaxWidth()) {
                     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.ColorLens, contentDescription = null, modifier = Modifier.size(20.dp))
                         Spacer(modifier = Modifier.width(12.dp))
-                        Text("Цвет шапки")
+                        Text("\u0426\u0432\u0435\u0442 \u0448\u0430\u043f\u043a\u0438")
                     }
                 }
                 TextButton(onClick = onMoveToFolder, modifier = Modifier.fillMaxWidth()) {
                     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.DriveFileMove, contentDescription = null, modifier = Modifier.size(20.dp))
                         Spacer(modifier = Modifier.width(12.dp))
-                        Text("Переместить в папку")
+                        Text("\u041f\u0435\u0440\u0435\u043c\u0435\u0441\u0442\u0438\u0442\u044c \u0432 \u043f\u0430\u043f\u043a\u0443")
                     }
                 }
                 TextButton(onClick = onDelete, modifier = Modifier.fillMaxWidth()) {
                     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Delete, contentDescription = null, tint = Color.Red, modifier = Modifier.size(20.dp))
                         Spacer(modifier = Modifier.width(12.dp))
-                        Text("Удалить", color = Color.Red)
+                        Text("\u0423\u0434\u0430\u043b\u0438\u0442\u044c", color = Color.Red)
                     }
                 }
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Закрыть") }
+            TextButton(onClick = onDismiss) { Text("\u0417\u0430\u043a\u0440\u044b\u0442\u044c") }
         }
     )
 }
@@ -419,27 +544,27 @@ fun TrashContextMenuDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(note.title.ifBlank { "Без заголовка" }) },
+        title = { Text(note.title.ifBlank { "\u0411\u0435\u0437 \u0437\u0430\u0433\u043e\u043b\u043e\u0432\u043a\u0430" }) },
         text = {
             Column {
                 TextButton(onClick = onRestore, modifier = Modifier.fillMaxWidth()) {
                     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.RestoreFromTrash, contentDescription = null, modifier = Modifier.size(20.dp))
                         Spacer(modifier = Modifier.width(12.dp))
-                        Text("Восстановить")
+                        Text("\u0412\u043e\u0441\u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u044c")
                     }
                 }
                 TextButton(onClick = onDeleteForever, modifier = Modifier.fillMaxWidth()) {
                     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.DeleteForever, contentDescription = null, tint = Color.Red, modifier = Modifier.size(20.dp))
                         Spacer(modifier = Modifier.width(12.dp))
-                        Text("Удалить навсегда", color = Color.Red)
+                        Text("\u0423\u0434\u0430\u043b\u0438\u0442\u044c \u043d\u0430\u0432\u0441\u0435\u0433\u0434\u0430", color = Color.Red)
                     }
                 }
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Закрыть") }
+            TextButton(onClick = onDismiss) { Text("\u0417\u0430\u043a\u0440\u044b\u0442\u044c") }
         }
     )
 }
@@ -454,7 +579,7 @@ fun HeaderColorDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Цвет шапки") },
+        title = { Text("\u0426\u0432\u0435\u0442 \u0448\u0430\u043f\u043a\u0438") },
         text = {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 HeaderColor.entries.forEach { color ->
@@ -480,14 +605,15 @@ fun HeaderColorDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onColorSelected(selected) }) { Text("Применить") }
+            TextButton(onClick = { onColorSelected(selected) }) { Text("\u041f\u0440\u0438\u043c\u0435\u043d\u0438\u0442\u044c") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Отмена") }
+            TextButton(onClick = onDismiss) { Text("\u041e\u0442\u043c\u0435\u043d\u0430") }
         }
     )
 }
 
+// Issue #10: Move only to folders (no "without folder" option)
 @Composable
 fun MoveFolderDialog(
     folders: List<Folder>,
@@ -499,22 +625,9 @@ fun MoveFolderDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Переместить в папку") },
+        title = { Text("\u041f\u0435\u0440\u0435\u043c\u0435\u0441\u0442\u0438\u0442\u044c \u0432 \u043f\u0430\u043f\u043a\u0443") },
         text = {
             Column {
-                // "No folder" option
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    RadioButton(
-                        selected = selectedFolderId == 0L,
-                        onClick = { selectedFolderId = 0L }
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Без папки")
-                }
-
                 folders.forEach { folder ->
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -531,10 +644,10 @@ fun MoveFolderDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onMove(selectedFolderId) }) { Text("Переместить") }
+            TextButton(onClick = { onMove(selectedFolderId) }) { Text("\u041f\u0435\u0440\u0435\u043c\u0435\u0441\u0442\u0438\u0442\u044c") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Отмена") }
+            TextButton(onClick = onDismiss) { Text("\u041e\u0442\u043c\u0435\u043d\u0430") }
         }
     )
 }

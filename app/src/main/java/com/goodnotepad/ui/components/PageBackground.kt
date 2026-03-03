@@ -9,24 +9,30 @@ import androidx.compose.ui.graphics.Color
 import com.goodnotepad.data.NoteTheme
 import com.goodnotepad.data.PageStyle
 
+// Issue #5: Line height depends on font size + a few pixels
+// Issue #13: Header area (title) has no lines/grid/dots - clean background
 @Composable
 fun PageBackground(
     pageStyle: PageStyle,
     noteTheme: NoteTheme,
     fontSize: Int,
+    headerHeightPx: Float = 0f,
     modifier: Modifier = Modifier
 ) {
-    val lineSpacing = (fontSize + 8).toFloat()
+    // lineSpacing = fontSize + 4dp equivalent (tight to font)
+    val lineSpacing = (fontSize + 4).toFloat() * 2.5f
     val lineColor = Color(0x20000000)
     val dotColor = Color(0x30000000)
 
     Canvas(modifier = modifier.fillMaxSize()) {
-        // Fill background
         drawRect(color = noteTheme.color)
+
+        // Start drawing lines/grid/dots BELOW the header area
+        val startY = headerHeightPx + lineSpacing
 
         when (pageStyle) {
             PageStyle.LINED -> {
-                var y = lineSpacing * 2 // Start after some top padding
+                var y = startY
                 while (y < size.height) {
                     drawLine(
                         color = lineColor,
@@ -39,8 +45,7 @@ fun PageBackground(
             }
             PageStyle.GRID -> {
                 val gridSize = lineSpacing
-                // Horizontal lines
-                var y = gridSize
+                var y = startY
                 while (y < size.height) {
                     drawLine(
                         color = lineColor,
@@ -50,12 +55,11 @@ fun PageBackground(
                     )
                     y += gridSize
                 }
-                // Vertical lines
                 var x = gridSize
                 while (x < size.width) {
                     drawLine(
                         color = lineColor,
-                        start = Offset(x, 0f),
+                        start = Offset(x, startY),
                         end = Offset(x, size.height),
                         strokeWidth = 0.5f
                     )
@@ -64,7 +68,7 @@ fun PageBackground(
             }
             PageStyle.DOTTED -> {
                 val dotSpacing = lineSpacing
-                var y = dotSpacing
+                var y = startY
                 while (y < size.height) {
                     var x = dotSpacing
                     while (x < size.width) {

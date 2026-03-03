@@ -1,7 +1,6 @@
 package com.goodnotepad.navigation
 
 import androidx.compose.runtime.*
-import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -13,13 +12,39 @@ import com.goodnotepad.ui.screens.allnotes.NoteListType
 import com.goodnotepad.ui.screens.editor.EditorScreen
 import com.goodnotepad.ui.screens.home.HomeScreen
 import com.goodnotepad.ui.screens.settings.SettingsScreen
-import kotlinx.coroutines.launch
 
 @Composable
 fun NavGraph(
     navController: NavHostController,
     viewModel: NoteViewModel
 ) {
+    // Common drawer navigation callbacks
+    val navigateToFolders: () -> Unit = {
+        navController.navigate(Routes.HOME) {
+            popUpTo(Routes.HOME) { inclusive = true }
+        }
+    }
+    val navigateToAllNotes: () -> Unit = {
+        navController.navigate(Routes.ALL_NOTES) {
+            popUpTo(Routes.HOME)
+        }
+    }
+    val navigateToFavorites: () -> Unit = {
+        navController.navigate(Routes.FAVORITES) {
+            popUpTo(Routes.HOME)
+        }
+    }
+    val navigateToTrash: () -> Unit = {
+        navController.navigate(Routes.TRASH) {
+            popUpTo(Routes.HOME)
+        }
+    }
+    val navigateToSettings: () -> Unit = {
+        navController.navigate(Routes.SETTINGS) {
+            popUpTo(Routes.HOME)
+        }
+    }
+
     NavHost(
         navController = navController,
         startDestination = Routes.HOME
@@ -31,22 +56,14 @@ fun NavGraph(
                 onNavigateToNotes = { folderId ->
                     navController.navigate(Routes.notes(folderId))
                 },
-                onNavigateToAllNotes = {
-                    navController.navigate(Routes.ALL_NOTES)
-                },
-                onNavigateToFavorites = {
-                    navController.navigate(Routes.FAVORITES)
-                },
-                onNavigateToTrash = {
-                    navController.navigate(Routes.TRASH)
-                },
-                onNavigateToSettings = {
-                    navController.navigate(Routes.SETTINGS)
-                }
+                onNavigateToAllNotes = navigateToAllNotes,
+                onNavigateToFavorites = navigateToFavorites,
+                onNavigateToTrash = navigateToTrash,
+                onNavigateToSettings = navigateToSettings
             )
         }
 
-        // Notes by Folder
+        // Notes by Folder - Issue #1: pass drawer navigation callbacks
         composable(
             route = Routes.NOTES,
             arguments = listOf(navArgument("folderId") { type = NavType.LongType })
@@ -67,7 +84,12 @@ fun NavGraph(
                 onNavigateBack = { navController.popBackStack() },
                 onNavigateToEditor = { noteId ->
                     navController.navigate(Routes.editor(noteId))
-                }
+                },
+                onNavigateToFolders = navigateToFolders,
+                onNavigateToAllNotes = navigateToAllNotes,
+                onNavigateToFavorites = navigateToFavorites,
+                onNavigateToTrash = navigateToTrash,
+                onNavigateToSettings = navigateToSettings
             )
         }
 
@@ -80,7 +102,12 @@ fun NavGraph(
                 onNavigateBack = { navController.popBackStack() },
                 onNavigateToEditor = { noteId ->
                     navController.navigate(Routes.editor(noteId))
-                }
+                },
+                onNavigateToFolders = navigateToFolders,
+                onNavigateToAllNotes = { },
+                onNavigateToFavorites = navigateToFavorites,
+                onNavigateToTrash = navigateToTrash,
+                onNavigateToSettings = navigateToSettings
             )
         }
 
@@ -93,7 +120,12 @@ fun NavGraph(
                 onNavigateBack = { navController.popBackStack() },
                 onNavigateToEditor = { noteId ->
                     navController.navigate(Routes.editor(noteId))
-                }
+                },
+                onNavigateToFolders = navigateToFolders,
+                onNavigateToAllNotes = navigateToAllNotes,
+                onNavigateToFavorites = { },
+                onNavigateToTrash = navigateToTrash,
+                onNavigateToSettings = navigateToSettings
             )
         }
 
@@ -106,7 +138,12 @@ fun NavGraph(
                 onNavigateBack = { navController.popBackStack() },
                 onNavigateToEditor = { noteId ->
                     navController.navigate(Routes.editor(noteId))
-                }
+                },
+                onNavigateToFolders = navigateToFolders,
+                onNavigateToAllNotes = navigateToAllNotes,
+                onNavigateToFavorites = navigateToFavorites,
+                onNavigateToTrash = { },
+                onNavigateToSettings = navigateToSettings
             )
         }
 

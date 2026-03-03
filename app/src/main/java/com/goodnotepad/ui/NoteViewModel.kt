@@ -12,27 +12,22 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
     private val noteDao = (application as NotepadApplication).database.noteDao()
     private val folderDao = (application as NotepadApplication).database.folderDao()
 
-    // Folders
     val folders: StateFlow<List<Folder>> = folderDao.getAllFolders()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    // All notes
     val allNotes: StateFlow<List<Note>> = noteDao.getAllNotes()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    // Favorite notes
     val favoriteNotes: StateFlow<List<Note>> = noteDao.getFavoriteNotes()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    // Deleted notes
     val deletedNotes: StateFlow<List<Note>> = noteDao.getDeletedNotes()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    // Current note being edited
+    // Current note being edited - Issue #11: always reset when loading new note
     private val _currentNote = MutableStateFlow<Note?>(null)
     val currentNote: StateFlow<Note?> = _currentNote.asStateFlow()
 
-    // Search
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
@@ -44,11 +39,9 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    // Sort mode
     private val _sortMode = MutableStateFlow(SortMode.UPDATED_DESC)
     val sortMode: StateFlow<SortMode> = _sortMode.asStateFlow()
 
-    // View mode
     private val _viewMode = MutableStateFlow(ViewMode.GRID_2)
     val viewMode: StateFlow<ViewMode> = _viewMode.asStateFlow()
 
@@ -83,12 +76,17 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
         return pinned + sortedUnpinned
     }
 
-    // Note operations
-    fun createNote(folderId: Long = 0, onCreated: (Long) -> Unit) {
+    // Issue #8: Create note with title and header color (from dialog), not opening editor immediately
+    // Issue #11: Each note is created fresh, no content from previous note
+    fun createNoteWithDetails(folderId: Long, title: String, headerColor: HeaderColor, onCreated: (Long) -> Unit) {
         viewModelScope.launch {
+            // Reset current note to prevent any state leakage
+            _currentNote.value = null
             val now = System.currentTimeMillis()
             val note = Note(
                 folderId = folderId,
+                title = title,
+                headerColor = headerColor,
                 createdAt = now,
                 updatedAt = now
             )
@@ -97,8 +95,10 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // Issue #11: Reset current note before loading to prevent state leakage
     fun loadNote(noteId: Long) {
         viewModelScope.launch {
+            _currentNote.value = null
             _currentNote.value = noteDao.getNoteById(noteId)
         }
     }
@@ -162,7 +162,6 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // Folder operations
     fun createFolder(name: String, color: FolderColor) {
         viewModelScope.launch {
             val folder = Folder(
@@ -194,10 +193,10 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteFolder(folder: Folder) {
         viewModelScope.launch {
-            // Move all notes from this folder to "no folder"
+            // Issue #10: Files only exist in folders, delete notes when folder deleted
             val notes = noteDao.getNotesByFolder(folder.id).first()
             notes.forEach { note ->
-                noteDao.moveToFolder(note.id, 0)
+                noteDao.softDelete(note.id, System.currentTimeMillis())
             }
             folderDao.deleteFolder(folder)
         }

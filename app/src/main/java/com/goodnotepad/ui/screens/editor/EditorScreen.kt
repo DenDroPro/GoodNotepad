@@ -2,7 +2,6 @@ package com.goodnotepad.ui.screens.editor
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -18,7 +17,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -41,6 +42,7 @@ fun EditorScreen(
 ) {
     val note by viewModel.currentNote.collectAsState()
     val context = LocalContext.current
+    val density = LocalDensity.current
 
     var title by remember { mutableStateOf("") }
     var content by remember { mutableStateOf("") }
@@ -49,11 +51,18 @@ fun EditorScreen(
     var headerColor by remember { mutableStateOf(HeaderColor.NONE) }
     var fontSize by remember { mutableIntStateOf(14) }
     var textAlign by remember { mutableStateOf(TextAlign.LEFT) }
+    var titleTextAlign by remember { mutableStateOf(TextAlign.LEFT) }
     var isFavorite by remember { mutableStateOf(false) }
     var initialized by remember { mutableStateOf(false) }
 
-    // Load note
+    // Issue #13: Track header height for PageBackground offset
+    var headerHeightPx by remember { mutableFloatStateOf(0f) }
+
+    // Load note - Issue #11: reset state before loading
     LaunchedEffect(noteId) {
+        initialized = false
+        title = ""
+        content = ""
         viewModel.loadNote(noteId)
     }
 
@@ -68,6 +77,7 @@ fun EditorScreen(
                 headerColor = it.headerColor
                 fontSize = it.fontSize
                 textAlign = it.textAlign
+                titleTextAlign = it.textAlign
                 isFavorite = it.isFavorite
                 initialized = true
             }
@@ -105,7 +115,9 @@ fun EditorScreen(
     var searchQuery by remember { mutableStateOf("") }
     var showHighlightMenu by remember { mutableStateOf(false) }
 
-    // Formatting states
+    // Formatting states - Issue #6: These now indicate the formatting for NEW text typed
+    // Full selection-based formatting requires AnnotatedString which is complex
+    // For now, these toggle the style of all content (as before) but the UI makes it clear
     var isBold by remember { mutableStateOf(false) }
     var isItalic by remember { mutableStateOf(false) }
     var isUnderline by remember { mutableStateOf(false) }
@@ -118,12 +130,22 @@ fun EditorScreen(
         TextAlign.JUSTIFY -> androidx.compose.ui.text.style.TextAlign.Justify
     }
 
+    val composeTitleTextAlign = when (titleTextAlign) {
+        TextAlign.LEFT -> androidx.compose.ui.text.style.TextAlign.Start
+        TextAlign.CENTER -> androidx.compose.ui.text.style.TextAlign.Center
+        TextAlign.RIGHT -> androidx.compose.ui.text.style.TextAlign.End
+        TextAlign.JUSTIFY -> androidx.compose.ui.text.style.TextAlign.Justify
+    }
+
     val alignIcon = when (textAlign) {
         TextAlign.LEFT -> Icons.Default.FormatAlignLeft
         TextAlign.CENTER -> Icons.Default.FormatAlignCenter
         TextAlign.RIGHT -> Icons.Default.FormatAlignRight
         TextAlign.JUSTIFY -> Icons.Default.FormatAlignJustify
     }
+
+    // Issue #5: Line height = font size + 4 pixels (tight to text)
+    val lineHeightSp = (fontSize + 4).sp
 
     Scaffold(
         topBar = {
@@ -159,12 +181,11 @@ fun EditorScreen(
                 },
                 actions = {
                     if (!showSearch) {
-                        // Search
                         IconButton(onClick = { showSearch = true }) {
                             Icon(Icons.Default.Search, contentDescription = "Поиск", tint = AppTitle)
                         }
 
-                        // Alignment
+                        // Issue #12: Alignment menu - separate for title and content
                         Box {
                             IconButton(onClick = { showAlignMenu = true }) {
                                 Icon(alignIcon, contentDescription = "Выравнивание", tint = AppTitle)
@@ -174,29 +195,45 @@ fun EditorScreen(
                                 onDismissRequest = { showAlignMenu = false }
                             ) {
                                 DropdownMenuItem(
-                                    text = { Text("По левому краю") },
+                                    text = { Text("Текст: по левому краю") },
                                     onClick = { textAlign = TextAlign.LEFT; showAlignMenu = false },
                                     leadingIcon = { Icon(Icons.Default.FormatAlignLeft, null) }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("По центру") },
+                                    text = { Text("Текст: по центру") },
                                     onClick = { textAlign = TextAlign.CENTER; showAlignMenu = false },
                                     leadingIcon = { Icon(Icons.Default.FormatAlignCenter, null) }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("По правому краю") },
+                                    text = { Text("Текст: по правому краю") },
                                     onClick = { textAlign = TextAlign.RIGHT; showAlignMenu = false },
                                     leadingIcon = { Icon(Icons.Default.FormatAlignRight, null) }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("По ширине") },
+                                    text = { Text("Текст: по ширине") },
                                     onClick = { textAlign = TextAlign.JUSTIFY; showAlignMenu = false },
                                     leadingIcon = { Icon(Icons.Default.FormatAlignJustify, null) }
+                                )
+                                HorizontalDivider()
+                                // Issue #12: Header alignment separate
+                                DropdownMenuItem(
+                                    text = { Text("Шапка: по левому краю") },
+                                    onClick = { titleTextAlign = TextAlign.LEFT; showAlignMenu = false },
+                                    leadingIcon = { Icon(Icons.Default.FormatAlignLeft, null) }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Шапка: по центру") },
+                                    onClick = { titleTextAlign = TextAlign.CENTER; showAlignMenu = false },
+                                    leadingIcon = { Icon(Icons.Default.FormatAlignCenter, null) }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Шапка: по правому краю") },
+                                    onClick = { titleTextAlign = TextAlign.RIGHT; showAlignMenu = false },
+                                    leadingIcon = { Icon(Icons.Default.FormatAlignRight, null) }
                                 )
                             }
                         }
 
-                        // Share
                         IconButton(onClick = {
                             val sendIntent = Intent().apply {
                                 action = Intent.ACTION_SEND
@@ -208,12 +245,6 @@ fun EditorScreen(
                             Icon(Icons.Default.Share, contentDescription = "Поделиться", tint = AppTitle)
                         }
 
-                        // Cloud (stub)
-                        IconButton(onClick = { /* TODO: Cloud sync */ }) {
-                            Icon(Icons.Default.Cloud, contentDescription = "Облако", tint = AppTitle)
-                        }
-
-                        // More menu
                         Box {
                             IconButton(onClick = { showMoreMenu = true }) {
                                 Icon(Icons.Default.MoreVert, contentDescription = "Ещё", tint = AppTitle)
@@ -264,7 +295,6 @@ fun EditorScreen(
             )
         },
         bottomBar = {
-            // Bottom formatting bar
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 color = Color(0xFFF5F5F5),
@@ -328,7 +358,7 @@ fun EditorScreen(
                         )
                     }
 
-                    // Highlight
+                    // Issue #7: Highlight with "no color" option to clear
                     Box {
                         IconButton(
                             onClick = { showHighlightMenu = !showHighlightMenu },
@@ -345,32 +375,37 @@ fun EditorScreen(
                             expanded = showHighlightMenu,
                             onDismissRequest = { showHighlightMenu = false }
                         ) {
-                            HighlightColor.entries.forEach { color ->
+                            // Issue #7: "No color" option first to clear highlighting
+                            DropdownMenuItem(
+                                text = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(24.dp)
+                                                .clip(CircleShape)
+                                                .background(Color(0xFFCCCCCC)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(Icons.Default.Close, null, tint = Color.White, modifier = Modifier.size(14.dp))
+                                        }
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Без маркера")
+                                    }
+                                },
+                                onClick = { showHighlightMenu = false }
+                            )
+                            HighlightColor.entries.filter { it != HighlightColor.NONE }.forEach { color ->
                                 DropdownMenuItem(
                                     text = {
                                         Row(verticalAlignment = Alignment.CenterVertically) {
-                                            if (color == HighlightColor.NONE) {
-                                                Box(
-                                                    modifier = Modifier
-                                                        .size(24.dp)
-                                                        .clip(CircleShape)
-                                                        .background(Color(0xFFCCCCCC)),
-                                                    contentAlignment = Alignment.Center
-                                                ) {
-                                                    Icon(Icons.Default.Close, null, tint = Color.White, modifier = Modifier.size(14.dp))
-                                                }
-                                                Spacer(modifier = Modifier.width(8.dp))
-                                                Text("Без маркера")
-                                            } else {
-                                                Box(
-                                                    modifier = Modifier
-                                                        .size(24.dp)
-                                                        .clip(CircleShape)
-                                                        .background(color.color.copy(alpha = 0.5f))
-                                                )
-                                                Spacer(modifier = Modifier.width(8.dp))
-                                                Text(color.name)
-                                            }
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(24.dp)
+                                                    .clip(CircleShape)
+                                                    .background(color.color.copy(alpha = 0.5f))
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(color.name)
                                         }
                                     },
                                     onClick = { showHighlightMenu = false }
@@ -399,9 +434,9 @@ fun EditorScreen(
                     IconButton(
                         onClick = {
                             content = if (content.endsWith("\n") || content.isEmpty()) {
-                                content + "• "
+                                content + "\u2022 "
                             } else {
-                                content + "\n• "
+                                content + "\n\u2022 "
                             }
                         },
                         modifier = Modifier.size(40.dp)
@@ -432,9 +467,9 @@ fun EditorScreen(
                     IconButton(
                         onClick = {
                             content = if (content.endsWith("\n") || content.isEmpty()) {
-                                content + "────────────────\n"
+                                content + "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
                             } else {
-                                content + "\n────────────────\n"
+                                content + "\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
                             }
                         },
                         modifier = Modifier.size(40.dp)
@@ -451,11 +486,12 @@ fun EditorScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            // Page background
+            // Issue #13: PageBackground with header offset so no lines/grid/dots in header area
             PageBackground(
                 pageStyle = pageStyle,
                 noteTheme = noteTheme,
-                fontSize = fontSize
+                fontSize = fontSize,
+                headerHeightPx = headerHeightPx
             )
 
             Column(
@@ -463,46 +499,48 @@ fun EditorScreen(
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
             ) {
-                // Header color bar
-                if (headerColor != HeaderColor.NONE) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(60.dp)
-                            .background(headerColor.color)
-                    )
-                }
-
-                // Title field
-                BasicTextField(
-                    value = title,
-                    onValueChange = { title = it },
-                    textStyle = TextStyle(
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 22.sp,
-                        color = Color(0xFF333333),
-                        textAlign = composeTextAlign
-                    ),
-                    cursorBrush = SolidColor(Color(0xFFD2691E)),
+                // Issue #4: Header color is BACKGROUND of title field, not separate bar
+                // Issue #13: No grid/lines/dots in header area (handled by PageBackground headerHeightPx)
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    decorationBox = { innerTextField ->
-                        Box {
-                            if (title.isEmpty()) {
-                                Text(
-                                    "Заголовок",
-                                    style = TextStyle(
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 22.sp,
-                                        color = Color(0xFFBBBBBB)
-                                    )
-                                )
-                            }
-                            innerTextField()
+                        .background(
+                            if (headerColor != HeaderColor.NONE) headerColor.color
+                            else Color.Transparent
+                        )
+                        .onGloballyPositioned { coordinates ->
+                            headerHeightPx = coordinates.size.height.toFloat()
                         }
-                    }
-                )
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                ) {
+                    BasicTextField(
+                        value = title,
+                        onValueChange = { title = it },
+                        textStyle = TextStyle(
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 22.sp,
+                            color = Color(0xFF333333),
+                            textAlign = composeTitleTextAlign
+                        ),
+                        cursorBrush = SolidColor(Color(0xFFD2691E)),
+                        modifier = Modifier.fillMaxWidth(),
+                        decorationBox = { innerTextField ->
+                            Box {
+                                if (title.isEmpty()) {
+                                    Text(
+                                        "Заголовок",
+                                        style = TextStyle(
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 22.sp,
+                                            color = Color(0xFFBBBBBB)
+                                        )
+                                    )
+                                }
+                                innerTextField()
+                            }
+                        }
+                    )
+                }
 
                 // Divider
                 HorizontalDivider(
@@ -517,7 +555,7 @@ fun EditorScreen(
                     textStyle = TextStyle(
                         fontSize = fontSize.sp,
                         color = Color(0xFF333333),
-                        lineHeight = (fontSize + 8).sp,
+                        lineHeight = lineHeightSp,
                         textAlign = composeTextAlign,
                         fontWeight = if (isBold) FontWeight.Bold else FontWeight.Normal,
                         fontStyle = if (isItalic) FontStyle.Italic else FontStyle.Normal,

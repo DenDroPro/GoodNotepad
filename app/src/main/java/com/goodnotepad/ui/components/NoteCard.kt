@@ -23,6 +23,7 @@ import com.goodnotepad.data.Note
 import java.text.SimpleDateFormat
 import java.util.*
 
+// Issue #3: Grid card with 3:4 portrait aspect ratio, title at top on header color background
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun NoteCard(
@@ -33,85 +34,89 @@ fun NoteCard(
 ) {
     Card(
         modifier = modifier
-            .clip(RoundedCornerShape(12.dp))
+            .aspectRatio(3f / 4f)
+            .clip(RoundedCornerShape(8.dp))
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick
             ),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(8.dp),
         colors = CardDefaults.cardColors(containerColor = note.theme.color),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
-        Column {
-            // Header color bar
-            if (note.headerColor != HeaderColor.NONE) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(40.dp)
-                        .background(note.headerColor.color)
-                )
-            }
-
-            Column(
-                modifier = Modifier.padding(12.dp)
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Title area with header color background
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(
+                        if (note.headerColor != HeaderColor.NONE) note.headerColor.color
+                        else note.theme.color
+                    )
+                    .padding(horizontal = 8.dp, vertical = 6.dp)
             ) {
-                // Icons row
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
+                    Text(
+                        text = note.title.ifBlank { "\u0411\u0435\u0437 \u0437\u0430\u0433\u043e\u043b\u043e\u0432\u043a\u0430" },
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        color = Color(0xFF333333),
+                        modifier = Modifier.weight(1f)
+                    )
                     if (note.isPinned) {
                         Icon(
                             imageVector = Icons.Filled.PushPin,
-                            contentDescription = "Закреплена",
-                            modifier = Modifier.size(14.dp),
+                            contentDescription = null,
+                            modifier = Modifier.size(12.dp),
                             tint = Color(0xFF8B6914)
                         )
-                        Spacer(modifier = Modifier.width(4.dp))
                     }
                     if (note.isFavorite) {
+                        Spacer(modifier = Modifier.width(2.dp))
                         Icon(
                             imageVector = Icons.Filled.Star,
-                            contentDescription = "Избранное",
-                            modifier = Modifier.size(14.dp),
+                            contentDescription = null,
+                            modifier = Modifier.size(12.dp),
                             tint = Color(0xFFFFA000)
                         )
                     }
                 }
+            }
 
-                // Title
-                if (note.title.isNotBlank()) {
-                    Text(
-                        text = note.title,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        color = Color(0xFF333333)
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                }
+            // Divider
+            HorizontalDivider(color = Color(0x15000000), thickness = 0.5.dp)
 
-                // Preview
+            // Content preview area
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+            ) {
                 if (note.preview.isNotBlank()) {
                     Text(
                         text = note.preview,
-                        fontSize = 12.sp,
-                        maxLines = 4,
+                        fontSize = 10.sp,
+                        maxLines = 8,
                         overflow = TextOverflow.Ellipsis,
-                        color = Color(0xFF888888)
+                        color = Color(0xFF888888),
+                        lineHeight = 13.sp
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
                 }
-
-                // Date
-                Text(
-                    text = formatDate(note.updatedAt),
-                    fontSize = 10.sp,
-                    color = Color(0xFFAAAAAA)
-                )
             }
+
+            // Date at bottom
+            Text(
+                text = formatDate(note.updatedAt),
+                fontSize = 9.sp,
+                color = Color(0xFFAAAAAA),
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+            )
         }
     }
 }
@@ -127,7 +132,7 @@ fun NoteListItem(
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .height(80.dp)
+            .height(72.dp)
             .clip(RoundedCornerShape(8.dp))
             .combinedClickable(
                 onClick = onClick,
@@ -154,34 +159,28 @@ fun NoteListItem(
                     .padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
-                // Title
                 Text(
-                    text = note.title.ifBlank { "Без заголовка" },
+                    text = note.title.ifBlank { "\u0411\u0435\u0437 \u0437\u0430\u0433\u043e\u043b\u043e\u0432\u043a\u0430" },
                     fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp,
+                    fontSize = 15.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     color = Color(0xFF333333)
                 )
-
-                // Preview
                 Text(
-                    text = note.preview.ifBlank { "Пустая заметка" },
-                    fontSize = 14.sp,
+                    text = note.preview.ifBlank { "\u041f\u0443\u0441\u0442\u0430\u044f \u0437\u0430\u043c\u0435\u0442\u043a\u0430" },
+                    fontSize = 13.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     color = Color(0xFF888888)
                 )
-
-                // Date
                 Text(
                     text = formatDate(note.updatedAt),
-                    fontSize = 12.sp,
+                    fontSize = 11.sp,
                     color = Color(0xFFAAAAAA)
                 )
             }
 
-            // Icons
             Column(
                 modifier = Modifier
                     .padding(8.dp)
@@ -192,7 +191,7 @@ fun NoteListItem(
                 if (note.isPinned) {
                     Icon(
                         imageVector = Icons.Filled.PushPin,
-                        contentDescription = "Закреплена",
+                        contentDescription = null,
                         modifier = Modifier.size(16.dp),
                         tint = Color(0xFF8B6914)
                     )
@@ -200,7 +199,7 @@ fun NoteListItem(
                 if (note.isFavorite) {
                     Icon(
                         imageVector = Icons.Filled.Star,
-                        contentDescription = "Избранное",
+                        contentDescription = null,
                         modifier = Modifier.size(16.dp),
                         tint = Color(0xFFFFA000)
                     )
