@@ -23,6 +23,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.ParagraphStyle
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
@@ -66,7 +67,6 @@ data class CharFormat(
     )
 }
 
-/** Serialize CharFormat list to compact JSON string */
 fun serializeFormats(formats: List<CharFormat>): String {
     if (formats.isEmpty() || formats.all { it == CharFormat() }) return ""
     val arr = JSONArray()
@@ -91,7 +91,6 @@ fun serializeFormats(formats: List<CharFormat>): String {
     return if (arr.length() == 0) "" else arr.toString()
 }
 
-/** Deserialize CharFormat list from JSON string */
 fun deserializeFormats(json: String, textLength: Int): List<CharFormat> {
     val result = MutableList(textLength) { CharFormat() }
     if (json.isBlank()) return result
@@ -112,14 +111,25 @@ fun deserializeFormats(json: String, textLength: Int): List<CharFormat> {
                 if (j < textLength) result[j] = fmt
             }
         }
-    } catch (_: Exception) { /* fallback to default */ }
+    } catch (_: Exception) {}
     return result
 }
 
-/** Build AnnotatedString from plain text + per-char formats */
-fun buildFormattedString(text: String, formats: List<CharFormat>): AnnotatedString {
+/**
+ * Build AnnotatedString with per-char formatting AND ParagraphStyle for text alignment.
+ * ParagraphStyle is the ONLY reliable way to align text in BasicTextField.
+ */
+fun buildFormattedString(
+    text: String,
+    formats: List<CharFormat>,
+    paragraphTextAlign: androidx.compose.ui.text.style.TextAlign = androidx.compose.ui.text.style.TextAlign.Start
+): AnnotatedString {
     return buildAnnotatedString {
         append(text)
+        // Force text alignment via ParagraphStyle - this works even when BasicTextField ignores textStyle.textAlign
+        if (text.isNotEmpty()) {
+            addStyle(ParagraphStyle(textAlign = paragraphTextAlign), 0, text.length)
+        }
         if (formats.isEmpty() || text.isEmpty()) return@buildAnnotatedString
         val defaultFmt = CharFormat()
         var i = 0
@@ -130,6 +140,21 @@ fun buildFormattedString(text: String, formats: List<CharFormat>): AnnotatedStri
             if (fmt != defaultFmt) {
                 addStyle(fmt.toSpanStyle(), start, i)
             }
+        }
+    }
+}
+
+/**
+ * Build AnnotatedString for title with ParagraphStyle alignment.
+ */
+fun buildTitleString(
+    text: String,
+    paragraphTextAlign: androidx.compose.ui.text.style.TextAlign = androidx.compose.ui.text.style.TextAlign.Start
+): AnnotatedString {
+    return buildAnnotatedString {
+        append(text)
+        if (text.isNotEmpty()) {
+            addStyle(ParagraphStyle(textAlign = paragraphTextAlign), 0, text.length)
         }
     }
 }
@@ -146,7 +171,8 @@ fun EditorScreen(
     val screenHeightDp = LocalConfiguration.current.screenHeightDp
 
     // State
-    var title by remember { mutableStateOf("") }
+    var titleText by remember { mutableStateOf("") }
+    var titleSelection by remember { mutableStateOf(TextRange.Zero) }
     var contentText by remember { mutableStateOf("") }
     var contentSelection by remember { mutableStateOf(TextRange.Zero) }
     var contentComposition by remember { mutableStateOf<TextRange?>(null) }
@@ -165,13 +191,13 @@ fun EditorScreen(
     var formatVersion by remember { mutableIntStateOf(0) }
     var activeFormat by remember { mutableStateOf(CharFormat()) }
 
-    // Text layout result for drawing lines at exact positions
+    // Text layout result for drawing lines
     var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
 
     // Load note
     LaunchedEffect(noteId) {
         initialized = false
-        title = ""
+        titleText = ""
         contentText = ""
         charFormats.clear()
         formatVersion++
@@ -181,7 +207,8 @@ fun EditorScreen(
     LaunchedEffect(note) {
         note?.let {
             if (!initialized) {
-                title = it.title
+                titleText = it.title
+                titleSelection = TextRange(it.title.length)
                 contentText = it.content
                 contentSelection = TextRange(it.content.length)
                 charFormats.clear()
@@ -200,12 +227,12 @@ fun EditorScreen(
         }
     }
 
-    // Auto-save with formatting
-    LaunchedEffect(title, contentText, textAlign, titleTextAlign, pageStyle, noteTheme, headerColor, fontSize, noteLineOpacity, formatVersion) {
+    // Auto-save
+    LaunchedEffect(titleText, contentText, textAlign, titleTextAlign, pageStyle, noteTheme, headerColor, fontSize, noteLineOpacity, formatVersion) {
         if (initialized) {
             note?.let {
                 viewModel.saveNote(it.copy(
-                    title = title, content = contentText, preview = contentText.take(100),
+                    title = titleText, content = contentText, preview = contentText.take(100),
                     formatting = serializeFormats(charFormats),
                     theme = noteTheme, pageStyle = pageStyle, headerColor = headerColor,
                     fontSize = fontSize, textAlign = textAlign, titleTextAlign = titleTextAlign,
@@ -225,7 +252,7 @@ fun EditorScreen(
     var searchQuery by remember { mutableStateOf("") }
     var showHighlightMenu by remember { mutableStateOf(false) }
 
-    // Text alignment
+    // Compose text alignment values
     val composeTextAlign = when (textAlign) {
         TextAlign.LEFT -> androidx.compose.ui.text.style.TextAlign.Start
         TextAlign.CENTER -> androidx.compose.ui.text.style.TextAlign.Center
@@ -245,18 +272,32 @@ fun EditorScreen(
         TextAlign.JUSTIFY -> Icons.Default.FormatAlignJustify
     }
 
-    // Line height = fontSize * 1.5 for proper text-to-line sync
     val lineHeightSp = (fontSize * 1.5f).sp
 
-    // Build annotated string for display
-    val annotatedContent = remember(contentText, formatVersion) {
-        buildFormattedString(contentText, charFormats.toList())
+    // Build title with ParagraphStyle alignment
+    val titleAnnotated = remember(titleText, composeTitleTextAlign) {
+        buildTitleString(titleText, composeTitleTextAlign)
+    }
+    val titleFieldValue = TextFieldValue(
+        annotatedString = titleAnnotated,
+        selection = titleSelection
+    )
+
+    // Build content with ParagraphStyle alignment + char formatting
+    val annotatedContent = remember(contentText, formatVersion, composeTextAlign) {
+        buildFormattedString(contentText, charFormats.toList(), composeTextAlign)
     }
     val displayValue = TextFieldValue(
         annotatedString = annotatedContent,
         selection = contentSelection,
         composition = contentComposition
     )
+
+    // Title change handler
+    fun onTitleChange(newValue: TextFieldValue) {
+        titleText = newValue.text
+        titleSelection = newValue.selection
+    }
 
     // Content change handler
     fun onContentChange(newValue: TextFieldValue) {
@@ -331,7 +372,7 @@ fun EditorScreen(
                 title = {
                     if (showSearch) {
                         TextField(value = searchQuery, onValueChange = { searchQuery = it },
-                            placeholder = { Text("Поиск в заметке...") },
+                            placeholder = { Text("\u041f\u043e\u0438\u0441\u043a \u0432 \u0437\u0430\u043c\u0435\u0442\u043a\u0435...") },
                             singleLine = true,
                             colors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent),
                             modifier = Modifier.fillMaxWidth())
@@ -340,121 +381,93 @@ fun EditorScreen(
                 navigationIcon = {
                     if (showSearch) {
                         IconButton(onClick = { showSearch = false; searchQuery = "" }) {
-                            Icon(Icons.Default.Close, contentDescription = "Закрыть")
+                            Icon(Icons.Default.Close, contentDescription = "\u0417\u0430\u043a\u0440\u044b\u0442\u044c")
                         }
                     } else {
                         IconButton(onClick = onNavigateBack, modifier = Modifier.size(40.dp)) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = "Назад", tint = AppTitle, modifier = Modifier.size(20.dp))
+                            Icon(Icons.Default.ArrowBack, contentDescription = "\u041d\u0430\u0437\u0430\u0434", tint = AppTitle, modifier = Modifier.size(20.dp))
                         }
                     }
                 },
                 actions = {
                     if (!showSearch) {
                         IconButton(onClick = { showSearch = true }, modifier = Modifier.size(40.dp)) {
-                            Icon(Icons.Default.Search, contentDescription = "Поиск", tint = AppTitle, modifier = Modifier.size(20.dp))
+                            Icon(Icons.Default.Search, contentDescription = "\u041f\u043e\u0438\u0441\u043a", tint = AppTitle, modifier = Modifier.size(20.dp))
                         }
-                        // Compact alignment popup - icons only
                         Box {
                             IconButton(onClick = { showAlignMenu = true }, modifier = Modifier.size(40.dp)) {
-                                Icon(alignIcon, contentDescription = "Выравнивание", tint = AppTitle, modifier = Modifier.size(20.dp))
+                                Icon(alignIcon, contentDescription = "\u0412\u044b\u0440\u0430\u0432\u043d\u0438\u0432\u0430\u043d\u0438\u0435", tint = AppTitle, modifier = Modifier.size(20.dp))
                             }
                             DropdownMenu(expanded = showAlignMenu, onDismissRequest = { showAlignMenu = false }) {
                                 Text(
-                                    "Выравнивание шапки",
+                                    "\u0412\u044b\u0440\u0430\u0432\u043d\u0438\u0432\u0430\u043d\u0438\u0435 \u0448\u0430\u043f\u043a\u0438",
                                     fontSize = 12.sp, color = Color(0xFF888888),
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
                                 )
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(2.dp)
-                                ) {
+                                Row(modifier = Modifier.padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                                     IconButton(onClick = { titleTextAlign = TextAlign.LEFT; showAlignMenu = false }) {
-                                        Icon(Icons.Default.FormatAlignLeft, null,
-                                            tint = if (titleTextAlign == TextAlign.LEFT) Color(0xFFD2691E) else Color(0xFF666666))
+                                        Icon(Icons.Default.FormatAlignLeft, null, tint = if (titleTextAlign == TextAlign.LEFT) Color(0xFFD2691E) else Color(0xFF666666))
                                     }
                                     IconButton(onClick = { titleTextAlign = TextAlign.CENTER; showAlignMenu = false }) {
-                                        Icon(Icons.Default.FormatAlignCenter, null,
-                                            tint = if (titleTextAlign == TextAlign.CENTER) Color(0xFFD2691E) else Color(0xFF666666))
+                                        Icon(Icons.Default.FormatAlignCenter, null, tint = if (titleTextAlign == TextAlign.CENTER) Color(0xFFD2691E) else Color(0xFF666666))
                                     }
                                     IconButton(onClick = { titleTextAlign = TextAlign.RIGHT; showAlignMenu = false }) {
-                                        Icon(Icons.Default.FormatAlignRight, null,
-                                            tint = if (titleTextAlign == TextAlign.RIGHT) Color(0xFFD2691E) else Color(0xFF666666))
+                                        Icon(Icons.Default.FormatAlignRight, null, tint = if (titleTextAlign == TextAlign.RIGHT) Color(0xFFD2691E) else Color(0xFF666666))
                                     }
                                     IconButton(onClick = { titleTextAlign = TextAlign.JUSTIFY; showAlignMenu = false }) {
-                                        Icon(Icons.Default.FormatAlignJustify, null,
-                                            tint = if (titleTextAlign == TextAlign.JUSTIFY) Color(0xFFD2691E) else Color(0xFF666666))
+                                        Icon(Icons.Default.FormatAlignJustify, null, tint = if (titleTextAlign == TextAlign.JUSTIFY) Color(0xFFD2691E) else Color(0xFF666666))
                                     }
                                 }
                                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                                 Text(
-                                    "Выравнивание текста",
+                                    "\u0412\u044b\u0440\u0430\u0432\u043d\u0438\u0432\u0430\u043d\u0438\u0435 \u0442\u0435\u043a\u0441\u0442\u0430",
                                     fontSize = 12.sp, color = Color(0xFF888888),
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
                                 )
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(2.dp)
-                                ) {
+                                Row(modifier = Modifier.padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                                     IconButton(onClick = { textAlign = TextAlign.LEFT; showAlignMenu = false }) {
-                                        Icon(Icons.Default.FormatAlignLeft, null,
-                                            tint = if (textAlign == TextAlign.LEFT) Color(0xFFD2691E) else Color(0xFF666666))
+                                        Icon(Icons.Default.FormatAlignLeft, null, tint = if (textAlign == TextAlign.LEFT) Color(0xFFD2691E) else Color(0xFF666666))
                                     }
                                     IconButton(onClick = { textAlign = TextAlign.CENTER; showAlignMenu = false }) {
-                                        Icon(Icons.Default.FormatAlignCenter, null,
-                                            tint = if (textAlign == TextAlign.CENTER) Color(0xFFD2691E) else Color(0xFF666666))
+                                        Icon(Icons.Default.FormatAlignCenter, null, tint = if (textAlign == TextAlign.CENTER) Color(0xFFD2691E) else Color(0xFF666666))
                                     }
                                     IconButton(onClick = { textAlign = TextAlign.RIGHT; showAlignMenu = false }) {
-                                        Icon(Icons.Default.FormatAlignRight, null,
-                                            tint = if (textAlign == TextAlign.RIGHT) Color(0xFFD2691E) else Color(0xFF666666))
+                                        Icon(Icons.Default.FormatAlignRight, null, tint = if (textAlign == TextAlign.RIGHT) Color(0xFFD2691E) else Color(0xFF666666))
                                     }
                                     IconButton(onClick = { textAlign = TextAlign.JUSTIFY; showAlignMenu = false }) {
-                                        Icon(Icons.Default.FormatAlignJustify, null,
-                                            tint = if (textAlign == TextAlign.JUSTIFY) Color(0xFFD2691E) else Color(0xFF666666))
+                                        Icon(Icons.Default.FormatAlignJustify, null, tint = if (textAlign == TextAlign.JUSTIFY) Color(0xFFD2691E) else Color(0xFF666666))
                                     }
                                 }
                                 Spacer(modifier = Modifier.height(4.dp))
                             }
                         }
                         IconButton(onClick = {
-                            val sendIntent = Intent().apply { action = Intent.ACTION_SEND; putExtra(Intent.EXTRA_TEXT, "$title\n\n$contentText"); type = "text/plain" }
-                            context.startActivity(Intent.createChooser(sendIntent, "Поделиться"))
+                            val sendIntent = Intent().apply { action = Intent.ACTION_SEND; putExtra(Intent.EXTRA_TEXT, "$titleText\n\n$contentText"); type = "text/plain" }
+                            context.startActivity(Intent.createChooser(sendIntent, "\u041f\u043e\u0434\u0435\u043b\u0438\u0442\u044c\u0441\u044f"))
                         }, modifier = Modifier.size(40.dp)) {
-                            Icon(Icons.Default.Share, contentDescription = "Поделиться", tint = AppTitle, modifier = Modifier.size(20.dp))
+                            Icon(Icons.Default.Share, contentDescription = "\u041f\u043e\u0434\u0435\u043b\u0438\u0442\u044c\u0441\u044f", tint = AppTitle, modifier = Modifier.size(20.dp))
                         }
                         Box {
                             IconButton(onClick = { showMoreMenu = true }, modifier = Modifier.size(40.dp)) {
-                                Icon(Icons.Default.MoreVert, contentDescription = "Ещё", tint = AppTitle, modifier = Modifier.size(20.dp))
+                                Icon(Icons.Default.MoreVert, contentDescription = "\u0415\u0449\u0451", tint = AppTitle, modifier = Modifier.size(20.dp))
                             }
                             DropdownMenu(expanded = showMoreMenu, onDismissRequest = { showMoreMenu = false }) {
-                                DropdownMenuItem(text = { Text("Тип страницы") }, onClick = { showPageStyleDialog = true; showMoreMenu = false }, leadingIcon = { Icon(Icons.Default.GridOn, null) })
-                                DropdownMenuItem(text = { Text("Цвет страницы") }, onClick = { showPageColorDialog = true; showMoreMenu = false }, leadingIcon = { Icon(Icons.Default.Palette, null) })
-                                DropdownMenuItem(text = { Text("Цвет шапки") }, onClick = { showHeaderColorDialog = true; showMoreMenu = false }, leadingIcon = { Icon(Icons.Default.ColorLens, null) })
+                                DropdownMenuItem(text = { Text("\u0422\u0438\u043f \u0441\u0442\u0440\u0430\u043d\u0438\u0446\u044b") }, onClick = { showPageStyleDialog = true; showMoreMenu = false }, leadingIcon = { Icon(Icons.Default.GridOn, null) })
+                                DropdownMenuItem(text = { Text("\u0426\u0432\u0435\u0442 \u0441\u0442\u0440\u0430\u043d\u0438\u0446\u044b") }, onClick = { showPageColorDialog = true; showMoreMenu = false }, leadingIcon = { Icon(Icons.Default.Palette, null) })
+                                DropdownMenuItem(text = { Text("\u0426\u0432\u0435\u0442 \u0448\u0430\u043f\u043a\u0438") }, onClick = { showHeaderColorDialog = true; showMoreMenu = false }, leadingIcon = { Icon(Icons.Default.ColorLens, null) })
                                 HorizontalDivider()
                                 Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
-                                    Text("Размер шрифта: ${fontSize}sp", fontSize = 13.sp, color = Color(0xFF555555))
-                                    Slider(
-                                        value = fontSize.toFloat(),
-                                        onValueChange = { fontSize = it.roundToInt() },
-                                        valueRange = 10f..30f,
-                                        steps = 19,
-                                        modifier = Modifier.fillMaxWidth(),
-                                        colors = SliderDefaults.colors(thumbColor = Color(0xFFD2691E), activeTrackColor = Color(0xFFD2691E))
-                                    )
+                                    Text("\u0420\u0430\u0437\u043c\u0435\u0440 \u0448\u0440\u0438\u0444\u0442\u0430: ${fontSize}sp", fontSize = 13.sp, color = Color(0xFF555555))
+                                    Slider(value = fontSize.toFloat(), onValueChange = { fontSize = it.roundToInt() }, valueRange = 10f..30f, steps = 19, modifier = Modifier.fillMaxWidth(), colors = SliderDefaults.colors(thumbColor = Color(0xFFD2691E), activeTrackColor = Color(0xFFD2691E)))
                                 }
                                 HorizontalDivider()
                                 Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
-                                    Text("Яркость линеек: ${(noteLineOpacity * 100).toInt()}%", fontSize = 13.sp, color = Color(0xFF555555))
-                                    Slider(
-                                        value = noteLineOpacity,
-                                        onValueChange = { noteLineOpacity = it },
-                                        valueRange = 0.05f..0.5f,
-                                        modifier = Modifier.fillMaxWidth(),
-                                        colors = SliderDefaults.colors(thumbColor = Color(0xFFD2691E), activeTrackColor = Color(0xFFD2691E))
-                                    )
+                                    Text("\u042f\u0440\u043a\u043e\u0441\u0442\u044c \u043b\u0438\u043d\u0435\u0435\u043a: ${(noteLineOpacity * 100).toInt()}%", fontSize = 13.sp, color = Color(0xFF555555))
+                                    Slider(value = noteLineOpacity, onValueChange = { noteLineOpacity = it }, valueRange = 0.05f..0.5f, modifier = Modifier.fillMaxWidth(), colors = SliderDefaults.colors(thumbColor = Color(0xFFD2691E), activeTrackColor = Color(0xFFD2691E)))
                                 }
                                 HorizontalDivider()
                                 DropdownMenuItem(
-                                    text = { Text(if (isFavorite) "Убрать из избранного" else "Добавить в избранное") },
+                                    text = { Text(if (isFavorite) "\u0423\u0431\u0440\u0430\u0442\u044c \u0438\u0437 \u0438\u0437\u0431\u0440\u0430\u043d\u043d\u043e\u0433\u043e" else "\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0432 \u0438\u0437\u0431\u0440\u0430\u043d\u043d\u043e\u0435") },
                                     onClick = { isFavorite = !isFavorite; note?.let { viewModel.toggleNoteFavorite(it.id) }; showMoreMenu = false },
                                     leadingIcon = { Icon(if (isFavorite) Icons.Filled.Star else Icons.Outlined.StarOutline, null) }
                                 )
@@ -469,27 +482,27 @@ fun EditorScreen(
             Surface(modifier = Modifier.fillMaxWidth(), color = Color(0xFFF5F5F5), shadowElevation = 8.dp) {
                 Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = { toggleBold() }, modifier = Modifier.size(40.dp)) {
-                        Text("Ж", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = if (isBoldActive) Color(0xFFD2691E) else Color(0xFF555555))
+                        Text("\u0416", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = if (isBoldActive) Color(0xFFD2691E) else Color(0xFF555555))
                     }
                     IconButton(onClick = { toggleItalic() }, modifier = Modifier.size(40.dp)) {
-                        Text("К", fontStyle = FontStyle.Italic, fontSize = 16.sp, color = if (isItalicActive) Color(0xFFD2691E) else Color(0xFF555555))
+                        Text("\u041a", fontStyle = FontStyle.Italic, fontSize = 16.sp, color = if (isItalicActive) Color(0xFFD2691E) else Color(0xFF555555))
                     }
                     IconButton(onClick = { toggleUnderline() }, modifier = Modifier.size(40.dp)) {
-                        Text("Ч", textDecoration = TextDecoration.Underline, fontSize = 16.sp, color = if (isUnderlineActive) Color(0xFFD2691E) else Color(0xFF555555))
+                        Text("\u0427", textDecoration = TextDecoration.Underline, fontSize = 16.sp, color = if (isUnderlineActive) Color(0xFFD2691E) else Color(0xFF555555))
                     }
                     IconButton(onClick = { toggleStrikethrough() }, modifier = Modifier.size(40.dp)) {
                         Text("S", textDecoration = TextDecoration.LineThrough, fontSize = 16.sp, color = if (isStrikethroughActive) Color(0xFFD2691E) else Color(0xFF555555))
                     }
                     Box {
                         IconButton(onClick = { showHighlightMenu = !showHighlightMenu }, modifier = Modifier.size(40.dp)) {
-                            Icon(Icons.Default.Highlight, contentDescription = "Маркер", tint = Color(0xFF555555), modifier = Modifier.size(20.dp))
+                            Icon(Icons.Default.Highlight, contentDescription = "\u041c\u0430\u0440\u043a\u0435\u0440", tint = Color(0xFF555555), modifier = Modifier.size(20.dp))
                         }
                         DropdownMenu(expanded = showHighlightMenu, onDismissRequest = { showHighlightMenu = false }) {
                             DropdownMenuItem(
                                 text = { Row(verticalAlignment = Alignment.CenterVertically) {
                                     Box(Modifier.size(24.dp).clip(CircleShape).background(Color(0xFFCCCCCC)), contentAlignment = Alignment.Center) {
                                         Icon(Icons.Default.Close, null, tint = Color.White, modifier = Modifier.size(14.dp))
-                                    }; Spacer(Modifier.width(8.dp)); Text("Без маркера")
+                                    }; Spacer(Modifier.width(8.dp)); Text("\u0411\u0435\u0437 \u043c\u0430\u0440\u043a\u0435\u0440\u0430")
                                 } },
                                 onClick = { applyHighlight(HighlightColor.NONE); showHighlightMenu = false }
                             )
@@ -512,14 +525,14 @@ fun EditorScreen(
                     }
                     IconButton(onClick = {
                         val nl = if (contentText.endsWith("\n") || contentText.isEmpty()) "" else "\n"
-                        val ins = nl + "• "
+                        val ins = nl + "\u2022 "
                         val pos = contentSelection.start.coerceIn(0, contentText.length)
                         contentText = contentText.substring(0, pos) + ins + contentText.substring(pos)
                         repeat(ins.length) { charFormats.add(pos.coerceIn(0, charFormats.size), CharFormat()) }
                         contentSelection = TextRange(pos + ins.length)
                         formatVersion++
                     }, modifier = Modifier.size(40.dp)) {
-                        Icon(Icons.Default.FormatListBulleted, contentDescription = "Список", tint = Color(0xFF555555), modifier = Modifier.size(20.dp))
+                        Icon(Icons.Default.FormatListBulleted, contentDescription = "\u0421\u043f\u0438\u0441\u043e\u043a", tint = Color(0xFF555555), modifier = Modifier.size(20.dp))
                     }
                     IconButton(onClick = {
                         val pos = contentSelection.start.coerceIn(0, contentText.length)
@@ -542,18 +555,18 @@ fun EditorScreen(
                         contentSelection = TextRange(pos + ins.length)
                         formatVersion++
                     }, modifier = Modifier.size(40.dp)) {
-                        Icon(Icons.Default.FormatListNumbered, contentDescription = "Нумерованный", tint = Color(0xFF555555), modifier = Modifier.size(20.dp))
+                        Icon(Icons.Default.FormatListNumbered, contentDescription = "\u041d\u0443\u043c\u0435\u0440\u043e\u0432\u0430\u043d\u043d\u044b\u0439", tint = Color(0xFF555555), modifier = Modifier.size(20.dp))
                     }
                     IconButton(onClick = {
                         val nl = if (contentText.endsWith("\n") || contentText.isEmpty()) "" else "\n"
-                        val ins = nl + "─".repeat(16) + "\n"
+                        val ins = nl + "\u2500".repeat(16) + "\n"
                         val pos = contentSelection.start.coerceIn(0, contentText.length)
                         contentText = contentText.substring(0, pos) + ins + contentText.substring(pos)
                         repeat(ins.length) { charFormats.add(pos.coerceIn(0, charFormats.size), CharFormat()) }
                         contentSelection = TextRange(pos + ins.length)
                         formatVersion++
                     }, modifier = Modifier.size(40.dp)) {
-                        Icon(Icons.Default.HorizontalRule, contentDescription = "Линия", tint = Color(0xFF555555), modifier = Modifier.size(20.dp))
+                        Icon(Icons.Default.HorizontalRule, contentDescription = "\u041b\u0438\u043d\u0438\u044f", tint = Color(0xFF555555), modifier = Modifier.size(20.dp))
                     }
                 }
             }
@@ -566,47 +579,57 @@ fun EditorScreen(
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
         ) {
-            // Header area - clean, no lines, full width for alignment
+            // Header area - clean, no lines
+            // Padding on Box for visual spacing, BasicTextField fills full Box width
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(if (headerColor != HeaderColor.NONE) headerColor.color else Color.Transparent)
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .padding(horizontal = 15.dp, vertical = 12.dp)
             ) {
+                // Use TextFieldValue with ParagraphStyle for reliable alignment
                 BasicTextField(
-                    value = title,
-                    onValueChange = { title = it },
+                    value = titleFieldValue,
+                    onValueChange = { onTitleChange(it) },
                     textStyle = TextStyle(
                         fontWeight = FontWeight.Bold, fontSize = 22.sp,
-                        color = Color(0xFF333333), textAlign = composeTitleTextAlign
+                        color = Color(0xFF333333)
                     ),
                     cursorBrush = SolidColor(Color(0xFFD2691E)),
                     modifier = Modifier.fillMaxWidth(),
                     decorationBox = { innerTextField ->
                         Box(modifier = Modifier.fillMaxWidth()) {
-                            if (title.isEmpty()) Text("Заголовок", style = TextStyle(fontWeight = FontWeight.Bold, fontSize = 22.sp, color = Color(0xFFBBBBBB), textAlign = composeTitleTextAlign), modifier = Modifier.fillMaxWidth())
+                            if (titleText.isEmpty()) {
+                                Text(
+                                    "\u0417\u0430\u0433\u043e\u043b\u043e\u0432\u043e\u043a",
+                                    style = TextStyle(
+                                        fontWeight = FontWeight.Bold, fontSize = 22.sp,
+                                        color = Color(0xFFBBBBBB), textAlign = composeTitleTextAlign
+                                    ),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
                             innerTextField()
                         }
                     }
                 )
             }
 
-            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp), color = Color(0x20000000))
+            HorizontalDivider(modifier = Modifier.padding(horizontal = 15.dp), color = Color(0x20000000))
 
-            // Content area - use onTextLayout to get ACTUAL line positions
-            // Then draw lines based on those positions
-            // NO horizontal padding on BasicTextField - text goes edge-to-edge for correct alignment
-            // Vertical padding only to offset from top
+            // Content area with lines drawn behind
+            // 15dp horizontal padding for text, lines go edge-to-edge
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .defaultMinSize(minHeight = screenHeightDp.dp)
             ) {
-                // Draw lines behind text using actual layout positions
+                // Line drawing layer - full width, behind text
                 val lineColor = Color.Black.copy(alpha = noteLineOpacity)
                 val currentTextLayout = textLayoutResult
                 val currentPageStyle = pageStyle
                 val lhSp = lineHeightSp
+                val padHorizontal = 15.dp
 
                 Box(
                     modifier = Modifier
@@ -616,35 +639,30 @@ fun EditorScreen(
                             val padTopPx = 8.dp.toPx()
 
                             if (currentTextLayout != null && currentTextLayout.lineCount > 0) {
-                                // Use ACTUAL line positions from text layout
                                 when (currentPageStyle) {
                                     PageStyle.LINED -> {
-                                        // Draw a line at the bottom of each text line
                                         for (i in 0 until currentTextLayout.lineCount) {
                                             val lineBottom = currentTextLayout.getLineBottom(i) + padTopPx
                                             drawLine(lineColor, Offset(0f, lineBottom), Offset(size.width, lineBottom), strokeWidth = 0.8f)
                                         }
-                                        // Continue with calculated lines for empty space below text
-                                        val lastLineBottom = if (currentTextLayout.lineCount > 0) currentTextLayout.getLineBottom(currentTextLayout.lineCount - 1) + padTopPx else padTopPx
-                                        var y = lastLineBottom + lhPx
+                                        val lastBottom = currentTextLayout.getLineBottom(currentTextLayout.lineCount - 1) + padTopPx
+                                        var y = lastBottom + lhPx
                                         while (y < size.height) {
                                             drawLine(lineColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 0.8f)
                                             y += lhPx
                                         }
                                     }
                                     PageStyle.GRID -> {
-                                        // Horizontal lines at actual text line positions
                                         for (i in 0 until currentTextLayout.lineCount) {
                                             val lineBottom = currentTextLayout.getLineBottom(i) + padTopPx
                                             drawLine(lineColor, Offset(0f, lineBottom), Offset(size.width, lineBottom), strokeWidth = 0.5f)
                                         }
-                                        val lastLineBottom = if (currentTextLayout.lineCount > 0) currentTextLayout.getLineBottom(currentTextLayout.lineCount - 1) + padTopPx else padTopPx
-                                        var y = lastLineBottom + lhPx
+                                        val lastBottom = currentTextLayout.getLineBottom(currentTextLayout.lineCount - 1) + padTopPx
+                                        var y = lastBottom + lhPx
                                         while (y < size.height) {
                                             drawLine(lineColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 0.5f)
                                             y += lhPx
                                         }
-                                        // Vertical lines
                                         var x = lhPx
                                         while (x < size.width) {
                                             drawLine(lineColor, Offset(x, padTopPx), Offset(x, size.height), strokeWidth = 0.5f)
@@ -661,8 +679,8 @@ fun EditorScreen(
                                                 x += lhPx
                                             }
                                         }
-                                        val lastLineBottom = if (currentTextLayout.lineCount > 0) currentTextLayout.getLineBottom(currentTextLayout.lineCount - 1) + padTopPx else padTopPx
-                                        var y = lastLineBottom + lhPx
+                                        val lastBottom = currentTextLayout.getLineBottom(currentTextLayout.lineCount - 1) + padTopPx
+                                        var y = lastBottom + lhPx
                                         while (y < size.height) {
                                             var x = lhPx
                                             while (x < size.width) {
@@ -672,10 +690,9 @@ fun EditorScreen(
                                             y += lhPx
                                         }
                                     }
-                                    PageStyle.BLANK -> { /* no lines */ }
+                                    PageStyle.BLANK -> {}
                                 }
                             } else {
-                                // No text layout yet - use calculated positions
                                 when (currentPageStyle) {
                                     PageStyle.LINED -> {
                                         var y = padTopPx + lhPx
@@ -708,13 +725,13 @@ fun EditorScreen(
                                             y += lhPx
                                         }
                                     }
-                                    PageStyle.BLANK -> { /* no lines */ }
+                                    PageStyle.BLANK -> {}
                                 }
                             }
                         }
                 )
 
-                // Text field on top - NO horizontal padding so alignment works edge-to-edge
+                // Text field - 15dp horizontal padding, alignment via ParagraphStyle in AnnotatedString
                 BasicTextField(
                     value = displayValue,
                     onValueChange = { onContentChange(it) },
@@ -723,7 +740,6 @@ fun EditorScreen(
                         fontSize = fontSize.sp,
                         color = Color(0xFF333333),
                         lineHeight = lineHeightSp,
-                        textAlign = composeTextAlign,
                         platformStyle = PlatformTextStyle(includeFontPadding = false),
                         lineHeightStyle = LineHeightStyle(
                             alignment = LineHeightStyle.Alignment.Bottom,
@@ -734,10 +750,20 @@ fun EditorScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = screenHeightDp.dp)
-                        .padding(vertical = 8.dp),
+                        .padding(horizontal = 15.dp, vertical = 8.dp),
                     decorationBox = { innerTextField ->
                         Box(modifier = Modifier.fillMaxWidth()) {
-                            if (contentText.isEmpty()) Text("Начните писать...", style = TextStyle(fontSize = fontSize.sp, color = Color(0xFFBBBBBB), textAlign = composeTextAlign), modifier = Modifier.fillMaxWidth())
+                            if (contentText.isEmpty()) {
+                                Text(
+                                    "\u041d\u0430\u0447\u043d\u0438\u0442\u0435 \u043f\u0438\u0441\u0430\u0442\u044c...",
+                                    style = TextStyle(
+                                        fontSize = fontSize.sp,
+                                        color = Color(0xFFBBBBBB),
+                                        textAlign = composeTextAlign
+                                    ),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
                             innerTextField()
                         }
                     }
@@ -761,14 +787,14 @@ fun EditorScreen(
 @Composable
 fun PageStyleDialog(currentStyle: PageStyle, onDismiss: () -> Unit, onStyleSelected: (PageStyle) -> Unit) {
     val styles = listOf(
-        PageStyle.BLANK to "Чистый лист",
-        PageStyle.LINED to "В линейку",
-        PageStyle.GRID to "В клетку",
-        PageStyle.DOTTED to "В точку"
+        PageStyle.BLANK to "\u0427\u0438\u0441\u0442\u044b\u0439 \u043b\u0438\u0441\u0442",
+        PageStyle.LINED to "\u0412 \u043b\u0438\u043d\u0435\u0439\u043a\u0443",
+        PageStyle.GRID to "\u0412 \u043a\u043b\u0435\u0442\u043a\u0443",
+        PageStyle.DOTTED to "\u0412 \u0442\u043e\u0447\u043a\u0443"
     )
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Тип страницы") },
+        title = { Text("\u0422\u0438\u043f \u0441\u0442\u0440\u0430\u043d\u0438\u0446\u044b") },
         text = {
             Column {
                 styles.forEach { (style, label) ->
@@ -788,7 +814,7 @@ fun PageStyleDialog(currentStyle: PageStyle, onDismiss: () -> Unit, onStyleSelec
 fun PageColorDialog(currentTheme: NoteTheme, onDismiss: () -> Unit, onThemeSelected: (NoteTheme) -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Цвет страницы") },
+        title = { Text("\u0426\u0432\u0435\u0442 \u0441\u0442\u0440\u0430\u043d\u0438\u0446\u044b") },
         text = {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 NoteTheme.entries.forEach { theme ->
@@ -812,7 +838,7 @@ fun PageColorDialog(currentTheme: NoteTheme, onDismiss: () -> Unit, onThemeSelec
 fun EditorHeaderColorDialog(currentColor: HeaderColor, onDismiss: () -> Unit, onColorSelected: (HeaderColor) -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Цвет шапки") },
+        title = { Text("\u0426\u0432\u0435\u0442 \u0448\u0430\u043f\u043a\u0438") },
         text = {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 HeaderColor.entries.forEach { color ->
