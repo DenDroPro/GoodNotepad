@@ -11,6 +11,7 @@ data class Note(
     val title: String = "",
     val content: String = "",
     val preview: String = "",
+    val formatting: String = "",
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
     val isFavorite: Boolean = false,
@@ -20,6 +21,8 @@ data class Note(
     val headerColor: HeaderColor = HeaderColor.NONE,
     val fontSize: Int = 14,
     val textAlign: TextAlign = TextAlign.LEFT,
+    val titleTextAlign: TextAlign = TextAlign.LEFT,
+    val lineOpacity: Float = 0.15f,
     val isDeleted: Boolean = false,
     val deletedAt: Long = 0
 )

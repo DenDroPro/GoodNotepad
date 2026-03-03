@@ -56,6 +56,9 @@ fun NavGraph(
                 onNavigateToNotes = { folderId ->
                     navController.navigate(Routes.notes(folderId))
                 },
+                onNavigateToEditor = { noteId ->
+                    navController.navigate(Routes.editor(noteId))
+                },
                 onNavigateToAllNotes = navigateToAllNotes,
                 onNavigateToFavorites = navigateToFavorites,
                 onNavigateToTrash = navigateToTrash,

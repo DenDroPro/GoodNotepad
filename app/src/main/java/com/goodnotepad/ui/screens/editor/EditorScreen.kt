@@ -40,6 +40,8 @@ import com.goodnotepad.data.*
 import com.goodnotepad.ui.NoteViewModel
 import com.goodnotepad.ui.screens.home.AppHeader
 import com.goodnotepad.ui.screens.home.AppTitle
+import org.json.JSONArray
+import org.json.JSONObject
 
 /** Per-character formatting info */
 data class CharFormat(
@@ -60,6 +62,56 @@ data class CharFormat(
         },
         background = if (highlightColor != HighlightColor.NONE) highlightColor.color.copy(alpha = 0.35f) else Color.Unspecified
     )
+}
+
+/** Serialize CharFormat list to compact JSON string */
+fun serializeFormats(formats: List<CharFormat>): String {
+    if (formats.isEmpty() || formats.all { it == CharFormat() }) return ""
+    val arr = JSONArray()
+    val defaultFmt = CharFormat()
+    var i = 0
+    while (i < formats.size) {
+        val fmt = formats[i]
+        val start = i
+        while (i < formats.size && formats[i] == fmt) i++
+        if (fmt != defaultFmt) {
+            val obj = JSONObject()
+            obj.put("s", start)
+            obj.put("e", i)
+            if (fmt.bold) obj.put("b", true)
+            if (fmt.italic) obj.put("i", true)
+            if (fmt.underline) obj.put("u", true)
+            if (fmt.strikethrough) obj.put("st", true)
+            if (fmt.highlightColor != HighlightColor.NONE) obj.put("h", fmt.highlightColor.name)
+            arr.put(obj)
+        }
+    }
+    return if (arr.length() == 0) "" else arr.toString()
+}
+
+/** Deserialize CharFormat list from JSON string */
+fun deserializeFormats(json: String, textLength: Int): List<CharFormat> {
+    val result = MutableList(textLength) { CharFormat() }
+    if (json.isBlank()) return result
+    try {
+        val arr = JSONArray(json)
+        for (idx in 0 until arr.length()) {
+            val obj = arr.getJSONObject(idx)
+            val s = obj.getInt("s")
+            val e = obj.getInt("e").coerceAtMost(textLength)
+            val fmt = CharFormat(
+                bold = obj.optBoolean("b", false),
+                italic = obj.optBoolean("i", false),
+                underline = obj.optBoolean("u", false),
+                strikethrough = obj.optBoolean("st", false),
+                highlightColor = try { HighlightColor.valueOf(obj.optString("h", "NONE")) } catch (_: Exception) { HighlightColor.NONE }
+            )
+            for (j in s until e) {
+                if (j < textLength) result[j] = fmt
+            }
+        }
+    } catch (_: Exception) { /* fallback to default */ }
+    return result
 }
 
 /** Build AnnotatedString from plain text + per-char formats */
@@ -90,7 +142,6 @@ fun EditorScreen(
     val note by viewModel.currentNote.collectAsState()
     val context = LocalContext.current
     val localDensity = LocalDensity.current
-    val lineOpacity by viewModel.lineOpacity.collectAsState()
     val screenHeightDp = LocalConfiguration.current.screenHeightDp
 
     // State
@@ -104,6 +155,7 @@ fun EditorScreen(
     var fontSize by remember { mutableIntStateOf(14) }
     var textAlign by remember { mutableStateOf(TextAlign.LEFT) }
     var titleTextAlign by remember { mutableStateOf(TextAlign.LEFT) }
+    var noteLineOpacity by remember { mutableFloatStateOf(0.15f) }
     var isFavorite by remember { mutableStateOf(false) }
     var initialized by remember { mutableStateOf(false) }
 
@@ -129,28 +181,31 @@ fun EditorScreen(
                 contentText = it.content
                 contentSelection = TextRange(it.content.length)
                 charFormats.clear()
-                charFormats.addAll(List(it.content.length) { CharFormat() })
+                charFormats.addAll(deserializeFormats(it.formatting, it.content.length))
                 formatVersion++
                 noteTheme = it.theme
                 pageStyle = it.pageStyle
                 headerColor = it.headerColor
                 fontSize = it.fontSize
                 textAlign = it.textAlign
-                titleTextAlign = it.textAlign
+                titleTextAlign = it.titleTextAlign
+                noteLineOpacity = it.lineOpacity
                 isFavorite = it.isFavorite
                 initialized = true
             }
         }
     }
 
-    // Auto-save (plain text only)
-    LaunchedEffect(title, contentText, textAlign, pageStyle, noteTheme, headerColor, fontSize) {
+    // Auto-save with formatting
+    LaunchedEffect(title, contentText, textAlign, titleTextAlign, pageStyle, noteTheme, headerColor, fontSize, noteLineOpacity, formatVersion) {
         if (initialized) {
             note?.let {
                 viewModel.saveNote(it.copy(
                     title = title, content = contentText, preview = contentText.take(100),
+                    formatting = serializeFormats(charFormats),
                     theme = noteTheme, pageStyle = pageStyle, headerColor = headerColor,
-                    fontSize = fontSize, textAlign = textAlign, isFavorite = isFavorite
+                    fontSize = fontSize, textAlign = textAlign, titleTextAlign = titleTextAlign,
+                    lineOpacity = noteLineOpacity, isFavorite = isFavorite
                 ))
             }
         }
@@ -324,6 +379,19 @@ fun EditorScreen(
                                 DropdownMenuItem(text = { Text("\u0426\u0432\u0435\u0442 \u0441\u0442\u0440\u0430\u043d\u0438\u0446\u044b") }, onClick = { showPageColorDialog = true; showMoreMenu = false }, leadingIcon = { Icon(Icons.Default.Palette, null) })
                                 DropdownMenuItem(text = { Text("\u0426\u0432\u0435\u0442 \u0448\u0430\u043f\u043a\u0438") }, onClick = { showHeaderColorDialog = true; showMoreMenu = false }, leadingIcon = { Icon(Icons.Default.ColorLens, null) })
                                 DropdownMenuItem(text = { Text("\u0420\u0430\u0437\u043c\u0435\u0440 \u0448\u0440\u0438\u0444\u0442\u0430") }, onClick = { showFontSizeDialog = true; showMoreMenu = false }, leadingIcon = { Icon(Icons.Default.FormatSize, null) })
+                                HorizontalDivider()
+                                // Line opacity slider - per-note
+                                Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
+                                    Text("\u042f\u0440\u043a\u043e\u0441\u0442\u044c \u043b\u0438\u043d\u0435\u0435\u043a: ${(noteLineOpacity * 100).toInt()}%", fontSize = 13.sp, color = Color(0xFF555555))
+                                    Slider(
+                                        value = noteLineOpacity,
+                                        onValueChange = { noteLineOpacity = it },
+                                        valueRange = 0.05f..0.5f,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        colors = SliderDefaults.colors(thumbColor = Color(0xFFD2691E), activeTrackColor = Color(0xFFD2691E))
+                                    )
+                                }
+                                HorizontalDivider()
                                 DropdownMenuItem(
                                     text = { Text(if (isFavorite) "\u0423\u0431\u0440\u0430\u0442\u044c \u0438\u0437 \u0438\u0437\u0431\u0440\u0430\u043d\u043d\u043e\u0433\u043e" else "\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0432 \u0438\u0437\u0431\u0440\u0430\u043d\u043d\u043e\u0435") },
                                     onClick = { isFavorite = !isFavorite; note?.let { viewModel.toggleNoteFavorite(it.id) }; showMoreMenu = false },
@@ -394,12 +462,23 @@ fun EditorScreen(
                         Icon(Icons.Default.FormatListBulleted, contentDescription = "\u0421\u043f\u0438\u0441\u043e\u043a", tint = Color(0xFF555555), modifier = Modifier.size(20.dp))
                     }
                     IconButton(onClick = {
-                        val textBefore = contentText.substring(0, contentSelection.start.coerceIn(0, contentText.length))
-                        val lastLine = textBefore.split("\n").lastOrNull() ?: ""
-                        val lastNum = Regex("^(\\d+)\\.").find(lastLine)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                        val nl = if (contentText.endsWith("\n") || contentText.isEmpty()) "" else "\n"
-                        val ins = nl + "${lastNum + 1}. "
                         val pos = contentSelection.start.coerceIn(0, contentText.length)
+                        val textBefore = contentText.substring(0, pos)
+                        // Find the current paragraph's last numbered line
+                        val paragraphLines = textBefore.split("\n")
+                        var lastNum = 0
+                        // Walk backwards from current line to find last number in this paragraph
+                        for (i in paragraphLines.indices.reversed()) {
+                            val line = paragraphLines[i].trim()
+                            if (line.isEmpty()) break // paragraph break - reset
+                            val match = Regex("^(\\d+)\\.").find(line)
+                            if (match != null) {
+                                lastNum = match.groupValues[1].toIntOrNull() ?: 0
+                                break
+                            }
+                        }
+                        val nl = if (textBefore.endsWith("\n") || contentText.isEmpty()) "" else "\n"
+                        val ins = nl + "${lastNum + 1}. "
                         contentText = contentText.substring(0, pos) + ins + contentText.substring(pos)
                         repeat(ins.length) { charFormats.add(pos.coerceIn(0, charFormats.size), CharFormat()) }
                         contentSelection = TextRange(pos + ins.length)
@@ -437,7 +516,6 @@ fun EditorScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(if (headerColor != HeaderColor.NONE) headerColor.color else Color.Transparent)
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
             ) {
                 BasicTextField(
                     value = title,
@@ -447,10 +525,10 @@ fun EditorScreen(
                         color = Color(0xFF333333), textAlign = composeTitleTextAlign
                     ),
                     cursorBrush = SolidColor(Color(0xFFD2691E)),
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
                     decorationBox = { innerTextField ->
-                        Box {
-                            if (title.isEmpty()) Text("\u0417\u0430\u0433\u043e\u043b\u043e\u0432\u043e\u043a", style = TextStyle(fontWeight = FontWeight.Bold, fontSize = 22.sp, color = Color(0xFFBBBBBB)))
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            if (title.isEmpty()) Text("\u0417\u0430\u0433\u043e\u043b\u043e\u0432\u043e\u043a", style = TextStyle(fontWeight = FontWeight.Bold, fontSize = 22.sp, color = Color(0xFFBBBBBB)), modifier = Modifier.fillMaxWidth(), textAlign = composeTitleTextAlign)
                             innerTextField()
                         }
                     }
@@ -472,8 +550,8 @@ fun EditorScreen(
                     textAlign = composeTextAlign,
                     platformStyle = PlatformTextStyle(includeFontPadding = false),
                     lineHeightStyle = LineHeightStyle(
-                        alignment = LineHeightStyle.Alignment.Proportional,
-                        trim = LineHeightStyle.Trim.None
+                        alignment = LineHeightStyle.Alignment.Bottom,
+                        trim = LineHeightStyle.Trim.FirstLineTop
                     )
                 ),
                 cursorBrush = SolidColor(Color(0xFFD2691E)),
@@ -484,13 +562,16 @@ fun EditorScreen(
                         // Line height in pixels - must match TextStyle lineHeight exactly
                         val lhPx = (fontSize + 4) * density * fontScale
                         val padTopPx = 8.dp.toPx()
-                        val lineColor = Color.Black.copy(alpha = lineOpacity)
+                        val padLeftPx = 12.dp.toPx()
+                        val lineColor = Color.Black.copy(alpha = noteLineOpacity)
 
                         when (pageStyle) {
                             PageStyle.LINED -> {
+                                // With Alignment.Bottom + Trim.FirstLineTop:
+                                // Text sits at bottom of line period, line drawn at bottom
                                 var y = padTopPx + lhPx
                                 while (y < size.height) {
-                                    drawLine(lineColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 1f)
+                                    drawLine(lineColor, Offset(padLeftPx, y), Offset(size.width - padLeftPx, y), strokeWidth = 0.8f)
                                     y += lhPx
                                 }
                             }
@@ -498,22 +579,22 @@ fun EditorScreen(
                                 // Horizontal lines
                                 var y = padTopPx + lhPx
                                 while (y < size.height) {
-                                    drawLine(lineColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 0.5f)
+                                    drawLine(lineColor, Offset(padLeftPx, y), Offset(size.width - padLeftPx, y), strokeWidth = 0.5f)
                                     y += lhPx
                                 }
                                 // Vertical lines
-                                var x = lhPx
-                                while (x < size.width) {
+                                var x = padLeftPx + lhPx
+                                while (x < size.width - padLeftPx) {
                                     drawLine(lineColor, Offset(x, padTopPx), Offset(x, size.height), strokeWidth = 0.5f)
                                     x += lhPx
                                 }
                             }
                             PageStyle.DOTTED -> {
-                                val dotColor = Color.Black.copy(alpha = (lineOpacity * 1.5f).coerceAtMost(1f))
+                                val dotColor = Color.Black.copy(alpha = (noteLineOpacity * 1.5f).coerceAtMost(1f))
                                 var y = padTopPx + lhPx
                                 while (y < size.height) {
-                                    var x = lhPx
-                                    while (x < size.width) {
+                                    var x = padLeftPx + lhPx
+                                    while (x < size.width - padLeftPx) {
                                         drawCircle(dotColor, radius = 1.5f, center = Offset(x, y))
                                         x += lhPx
                                     }
@@ -523,10 +604,10 @@ fun EditorScreen(
                             PageStyle.BLANK -> { /* no lines */ }
                         }
                     }
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
                 decorationBox = { innerTextField ->
-                    Box {
-                        if (contentText.isEmpty()) Text("\u041d\u0430\u0447\u043d\u0438\u0442\u0435 \u043f\u0438\u0441\u0430\u0442\u044c...", style = TextStyle(fontSize = fontSize.sp, color = Color(0xFFBBBBBB)))
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        if (contentText.isEmpty()) Text("\u041d\u0430\u0447\u043d\u0438\u0442\u0435 \u043f\u0438\u0441\u0430\u0442\u044c...", style = TextStyle(fontSize = fontSize.sp, color = Color(0xFFBBBBBB)), modifier = Modifier.fillMaxWidth(), textAlign = composeTextAlign)
                         innerTextField()
                     }
                 }
