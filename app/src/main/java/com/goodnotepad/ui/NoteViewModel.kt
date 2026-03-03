@@ -24,7 +24,6 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
     val deletedNotes: StateFlow<List<Note>> = noteDao.getDeletedNotes()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    // Current note being edited - Issue #11: always reset when loading new note
     private val _currentNote = MutableStateFlow<Note?>(null)
     val currentNote: StateFlow<Note?> = _currentNote.asStateFlow()
 
@@ -44,6 +43,14 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _viewMode = MutableStateFlow(ViewMode.GRID_2)
     val viewMode: StateFlow<ViewMode> = _viewMode.asStateFlow()
+
+    // Issue #11: Line/grid/dot opacity for brightness control in Settings
+    private val _lineOpacity = MutableStateFlow(0.15f)
+    val lineOpacity: StateFlow<Float> = _lineOpacity.asStateFlow()
+
+    fun setLineOpacity(opacity: Float) {
+        _lineOpacity.value = opacity.coerceIn(0.05f, 0.5f)
+    }
 
     fun setSearchQuery(query: String) {
         _searchQuery.value = query
@@ -76,11 +83,8 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
         return pinned + sortedUnpinned
     }
 
-    // Issue #8: Create note with title and header color (from dialog), not opening editor immediately
-    // Issue #11: Each note is created fresh, no content from previous note
     fun createNoteWithDetails(folderId: Long, title: String, headerColor: HeaderColor, onCreated: (Long) -> Unit) {
         viewModelScope.launch {
-            // Reset current note to prevent any state leakage
             _currentNote.value = null
             val now = System.currentTimeMillis()
             val note = Note(
@@ -95,7 +99,6 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // Issue #11: Reset current note before loading to prevent state leakage
     fun loadNote(noteId: Long) {
         viewModelScope.launch {
             _currentNote.value = null
@@ -193,7 +196,6 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteFolder(folder: Folder) {
         viewModelScope.launch {
-            // Issue #10: Files only exist in folders, delete notes when folder deleted
             val notes = noteDao.getNotesByFolder(folder.id).first()
             notes.forEach { note ->
                 noteDao.softDelete(note.id, System.currentTimeMillis())
