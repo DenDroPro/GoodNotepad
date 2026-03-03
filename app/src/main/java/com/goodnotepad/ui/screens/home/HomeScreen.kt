@@ -10,6 +10,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -481,27 +482,22 @@ fun CreateFolderDialog(onDismiss: () -> Unit, onCreate: (String, FolderColor, Fo
                 Spacer(modifier = Modifier.height(12.dp))
                 Text("Цвет", fontSize = 13.sp, color = Color(0xFF777777))
                 Spacer(modifier = Modifier.height(4.dp))
-                // Color row - wrapping
-                val colors = FolderColor.entries.toList()
-                for (rowIdx in 0..(colors.size - 1) / 5) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        for (colIdx in 0 until 5) {
-                            val idx = rowIdx * 5 + colIdx
-                            if (idx < colors.size) {
-                                val color = colors[idx]
-                                Box(
-                                    modifier = Modifier.size(32.dp).clip(CircleShape).background(color.color)
-                                        .then(if (color == selectedColor) Modifier.background(Color.Black.copy(alpha = 0.2f), CircleShape) else Modifier),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    IconButton(onClick = { selectedColor = color }, modifier = Modifier.size(32.dp)) {
-                                        if (color == selectedColor) Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(14.dp))
-                                    }
-                                }
+                // Color row - horizontal scroll
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                ) {
+                    FolderColor.entries.forEach { color ->
+                        Box(
+                            modifier = Modifier.size(32.dp).clip(CircleShape).background(color.color)
+                                .then(if (color == selectedColor) Modifier.background(Color.Black.copy(alpha = 0.2f), CircleShape) else Modifier),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            IconButton(onClick = { selectedColor = color }, modifier = Modifier.size(32.dp)) {
+                                if (color == selectedColor) Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(14.dp))
                             }
                         }
                     }
-                    if (rowIdx < (colors.size - 1) / 5) Spacer(modifier = Modifier.height(4.dp))
                 }
                 Spacer(modifier = Modifier.height(12.dp))
                 Text("Иконка", fontSize = 13.sp, color = Color(0xFF777777))
@@ -607,26 +603,38 @@ fun FolderColorDialog(currentColor: FolderColor, onDismiss: () -> Unit, onColorS
         onDismissRequest = onDismiss,
         title = { Text("Цвет папки") },
         text = {
-            val colors = FolderColor.entries.toList()
-            Column {
-                for (rowIdx in 0..(colors.size - 1) / 5) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        for (colIdx in 0 until 5) {
-                            val idx = rowIdx * 5 + colIdx
-                            if (idx < colors.size) {
-                                val color = colors[idx]
-                                Box(
-                                    modifier = Modifier.size(40.dp).clip(CircleShape).background(color.color),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    IconButton(onClick = { selectedColor = color }) {
-                                        if (color == selectedColor) Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(20.dp))
-                                    }
-                                }
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Пастельные", fontSize = 12.sp, color = Color(0xFF888888))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                ) {
+                    FolderColor.entries.filter { it.name.startsWith("PASTEL") || it == FolderColor.BROWN }.forEach { color ->
+                        Box(
+                            modifier = Modifier.size(40.dp).clip(CircleShape).background(color.color),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            IconButton(onClick = { selectedColor = color }) {
+                                if (color == selectedColor) Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(20.dp))
                             }
                         }
                     }
-                    if (rowIdx < (colors.size - 1) / 5) Spacer(modifier = Modifier.height(6.dp))
+                }
+                Text("Яркие", fontSize = 12.sp, color = Color(0xFF888888))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                ) {
+                    FolderColor.entries.filter { it.name.startsWith("VIBRANT") }.forEach { color ->
+                        Box(
+                            modifier = Modifier.size(40.dp).clip(CircleShape).background(color.color),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            IconButton(onClick = { selectedColor = color }) {
+                                if (color == selectedColor) Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(20.dp))
+                            }
+                        }
+                    }
                 }
             }
         },
