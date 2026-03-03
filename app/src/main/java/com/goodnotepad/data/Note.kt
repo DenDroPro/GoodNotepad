@@ -22,7 +22,7 @@ data class Note(
     val fontSize: Int = 14,
     val textAlign: TextAlign = TextAlign.LEFT,
     val titleTextAlign: TextAlign = TextAlign.LEFT,
-    val lineOpacity: Float = 0.15f,
+    val lineOpacity: Float = 0.3f,
     val isDeleted: Boolean = false,
     val deletedAt: Long = 0
 )

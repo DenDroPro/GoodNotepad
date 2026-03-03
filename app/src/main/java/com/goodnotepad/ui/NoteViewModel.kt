@@ -45,10 +45,10 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
     private val _viewMode = MutableStateFlow(ViewMode.GRID_2)
     val viewMode: StateFlow<ViewMode> = _viewMode.asStateFlow()
 
-    private val _lineOpacity = MutableStateFlow(0.15f)
+    private val _lineOpacity = MutableStateFlow(0.3f)
     val lineOpacity: StateFlow<Float> = _lineOpacity.asStateFlow()
 
-    // Cache folder note flows to prevent flickering from recreating StateFlow on each recomposition
+    // Cache folder note flows to prevent flickering
     private val folderNotesCache = mutableMapOf<Long, StateFlow<List<Note>>>()
 
     fun setLineOpacity(opacity: Float) {
@@ -128,8 +128,15 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun createFolderWithIcon(name: String, color: FolderColor, icon: FolderIcon) {
+        viewModelScope.launch {
+            folderDao.insertFolder(Folder(name = name, color = color, icon = icon, lastModified = System.currentTimeMillis()))
+        }
+    }
+
     fun renameFolder(folderId: Long, name: String) { viewModelScope.launch { folderDao.renameFolder(folderId, name) } }
     fun changeFolderColor(folderId: Long, color: FolderColor) { viewModelScope.launch { folderDao.changeColor(folderId, color.name) } }
+    fun changeFolderIcon(folderId: Long, icon: FolderIcon) { viewModelScope.launch { folderDao.changeIcon(folderId, icon.name) } }
     fun toggleFolderPin(folderId: Long) { viewModelScope.launch { folderDao.togglePin(folderId) } }
 
     fun deleteFolder(folder: Folder) {

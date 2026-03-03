@@ -42,7 +42,34 @@ enum class FolderColor(val color: Color) {
     GREEN(Color(0xFF66BB6A)),
     RED(Color(0xFFEF5350)),
     PURPLE(Color(0xFFAB47BC)),
-    ORANGE(Color(0xFFFFA726))
+    ORANGE(Color(0xFFFFA726)),
+    PINK(Color(0xFFF48FB1)),
+    LIGHT_BLUE(Color(0xFF81D4FA)),
+    LIGHT_GREEN(Color(0xFFA5D6A7)),
+    YELLOW(Color(0xFFFFE082))
+}
+
+enum class FolderIcon {
+    FOLDER,
+    WORK,
+    SCHOOL,
+    FAVORITE,
+    MUSIC,
+    PHOTO,
+    VIDEO,
+    TRAVEL,
+    FOOD,
+    SPORT,
+    HEALTH,
+    FINANCE,
+    SHOPPING,
+    PETS,
+    ART,
+    CODE,
+    BOOK,
+    GAME,
+    HOME,
+    CAR
 }
 
 enum class HighlightColor(val color: Color) {

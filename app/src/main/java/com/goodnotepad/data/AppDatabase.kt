@@ -7,7 +7,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [Note::class, Folder::class],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -27,6 +27,12 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE folders ADD COLUMN icon TEXT NOT NULL DEFAULT 'FOLDER'")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -34,7 +40,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "goodnotepad_database"
                 )
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .build()
                 INSTANCE = instance
                 instance
@@ -58,6 +64,9 @@ class Converters {
 
     @TypeConverter fun fromFolderColor(value: FolderColor): String = value.name
     @TypeConverter fun toFolderColor(value: String): FolderColor = FolderColor.valueOf(value)
+
+    @TypeConverter fun fromFolderIcon(value: FolderIcon): String = value.name
+    @TypeConverter fun toFolderIcon(value: String): FolderIcon = try { FolderIcon.valueOf(value) } catch (_: Exception) { FolderIcon.FOLDER }
 
     @TypeConverter fun fromViewMode(value: ViewMode): String = value.name
     @TypeConverter fun toViewMode(value: String): ViewMode = ViewMode.valueOf(value)

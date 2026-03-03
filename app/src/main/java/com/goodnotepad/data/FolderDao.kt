@@ -31,4 +31,7 @@ interface FolderDao {
 
     @Query("UPDATE folders SET color = :color WHERE id = :folderId")
     suspend fun changeColor(folderId: Long, color: String)
+
+    @Query("UPDATE folders SET icon = :icon WHERE id = :folderId")
+    suspend fun changeIcon(folderId: Long, icon: String)
 }

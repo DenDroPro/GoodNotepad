@@ -9,6 +9,7 @@ data class Folder(
     val id: Long = 0,
     val name: String = "",
     val color: FolderColor = FolderColor.BROWN,
+    val icon: FolderIcon = FolderIcon.FOLDER,
     val noteCount: Int = 0,
     val lastModified: Long = System.currentTimeMillis(),
     val isPinned: Boolean = false,
