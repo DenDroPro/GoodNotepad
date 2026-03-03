@@ -30,6 +30,7 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
+    @OptIn(kotlinx.coroutines.FlowPreview::class, kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val searchResults: StateFlow<List<Note>> = _searchQuery
         .debounce(300)
         .flatMapLatest { query ->
@@ -44,9 +45,11 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
     private val _viewMode = MutableStateFlow(ViewMode.GRID_2)
     val viewMode: StateFlow<ViewMode> = _viewMode.asStateFlow()
 
-    // Issue #11: Line/grid/dot opacity for brightness control in Settings
     private val _lineOpacity = MutableStateFlow(0.15f)
     val lineOpacity: StateFlow<Float> = _lineOpacity.asStateFlow()
+
+    // Cache folder note flows to prevent flickering from recreating StateFlow on each recomposition
+    private val folderNotesCache = mutableMapOf<Long, StateFlow<List<Note>>>()
 
     fun setLineOpacity(opacity: Float) {
         _lineOpacity.value = opacity.coerceIn(0.05f, 0.5f)
@@ -65,8 +68,10 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun getNotesByFolder(folderId: Long): StateFlow<List<Note>> {
-        return noteDao.getNotesByFolder(folderId)
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        return folderNotesCache.getOrPut(folderId) {
+            noteDao.getNotesByFolder(folderId)
+                .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        }
     }
 
     fun sortNotes(notes: List<Note>, sortMode: SortMode): List<Note> {
@@ -87,13 +92,7 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _currentNote.value = null
             val now = System.currentTimeMillis()
-            val note = Note(
-                folderId = folderId,
-                title = title,
-                headerColor = headerColor,
-                createdAt = now,
-                updatedAt = now
-            )
+            val note = Note(folderId = folderId, title = title, headerColor = headerColor, createdAt = now, updatedAt = now)
             val id = noteDao.insertNote(note)
             onCreated(id)
         }
@@ -108,107 +107,39 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
 
     fun saveNote(note: Note) {
         viewModelScope.launch {
-            val updated = note.copy(
-                updatedAt = System.currentTimeMillis(),
-                preview = note.content.take(100)
-            )
+            val updated = note.copy(updatedAt = System.currentTimeMillis(), preview = note.content.take(100))
             noteDao.updateNote(updated)
             _currentNote.value = updated
         }
     }
 
-    fun toggleNoteFavorite(noteId: Long) {
-        viewModelScope.launch {
-            noteDao.toggleFavorite(noteId)
-        }
-    }
-
-    fun toggleNotePin(noteId: Long) {
-        viewModelScope.launch {
-            noteDao.togglePin(noteId)
-        }
-    }
-
-    fun changeNoteHeaderColor(noteId: Long, color: HeaderColor) {
-        viewModelScope.launch {
-            noteDao.changeHeaderColor(noteId, color.name)
-        }
-    }
-
-    fun moveNoteToFolder(noteId: Long, folderId: Long) {
-        viewModelScope.launch {
-            noteDao.moveToFolder(noteId, folderId)
-        }
-    }
-
-    fun softDeleteNote(noteId: Long) {
-        viewModelScope.launch {
-            noteDao.softDelete(noteId, System.currentTimeMillis())
-        }
-    }
-
-    fun restoreNote(noteId: Long) {
-        viewModelScope.launch {
-            noteDao.restore(noteId)
-        }
-    }
-
-    fun permanentlyDeleteNote(note: Note) {
-        viewModelScope.launch {
-            noteDao.deleteNote(note)
-        }
-    }
-
-    fun emptyTrash() {
-        viewModelScope.launch {
-            noteDao.emptyTrash()
-        }
-    }
+    fun toggleNoteFavorite(noteId: Long) { viewModelScope.launch { noteDao.toggleFavorite(noteId) } }
+    fun toggleNotePin(noteId: Long) { viewModelScope.launch { noteDao.togglePin(noteId) } }
+    fun changeNoteHeaderColor(noteId: Long, color: HeaderColor) { viewModelScope.launch { noteDao.changeHeaderColor(noteId, color.name) } }
+    fun moveNoteToFolder(noteId: Long, folderId: Long) { viewModelScope.launch { noteDao.moveToFolder(noteId, folderId) } }
+    fun softDeleteNote(noteId: Long) { viewModelScope.launch { noteDao.softDelete(noteId, System.currentTimeMillis()) } }
+    fun restoreNote(noteId: Long) { viewModelScope.launch { noteDao.restore(noteId) } }
+    fun permanentlyDeleteNote(note: Note) { viewModelScope.launch { noteDao.deleteNote(note) } }
+    fun emptyTrash() { viewModelScope.launch { noteDao.emptyTrash() } }
 
     fun createFolder(name: String, color: FolderColor) {
         viewModelScope.launch {
-            val folder = Folder(
-                name = name,
-                color = color,
-                lastModified = System.currentTimeMillis()
-            )
-            folderDao.insertFolder(folder)
+            folderDao.insertFolder(Folder(name = name, color = color, lastModified = System.currentTimeMillis()))
         }
     }
 
-    fun renameFolder(folderId: Long, name: String) {
-        viewModelScope.launch {
-            folderDao.renameFolder(folderId, name)
-        }
-    }
-
-    fun changeFolderColor(folderId: Long, color: FolderColor) {
-        viewModelScope.launch {
-            folderDao.changeColor(folderId, color.name)
-        }
-    }
-
-    fun toggleFolderPin(folderId: Long) {
-        viewModelScope.launch {
-            folderDao.togglePin(folderId)
-        }
-    }
+    fun renameFolder(folderId: Long, name: String) { viewModelScope.launch { folderDao.renameFolder(folderId, name) } }
+    fun changeFolderColor(folderId: Long, color: FolderColor) { viewModelScope.launch { folderDao.changeColor(folderId, color.name) } }
+    fun toggleFolderPin(folderId: Long) { viewModelScope.launch { folderDao.togglePin(folderId) } }
 
     fun deleteFolder(folder: Folder) {
         viewModelScope.launch {
             val notes = noteDao.getNotesByFolder(folder.id).first()
-            notes.forEach { note ->
-                noteDao.softDelete(note.id, System.currentTimeMillis())
-            }
+            notes.forEach { noteDao.softDelete(it.id, System.currentTimeMillis()) }
             folderDao.deleteFolder(folder)
         }
     }
 
-    suspend fun getFolderById(folderId: Long): Folder? {
-        return folderDao.getFolderById(folderId)
-    }
-
-    suspend fun getNoteCountForFolder(folderId: Long): Int {
-        return noteDao.getNoteCountForFolder(folderId)
-    }
+    suspend fun getFolderById(folderId: Long): Folder? = folderDao.getFolderById(folderId)
+    suspend fun getNoteCountForFolder(folderId: Long): Int = noteDao.getNoteCountForFolder(folderId)
 }

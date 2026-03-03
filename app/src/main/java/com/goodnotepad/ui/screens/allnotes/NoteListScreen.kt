@@ -53,12 +53,15 @@ fun NoteListScreen(
     val sortMode by viewModel.sortMode.collectAsState()
     val viewMode by viewModel.viewMode.collectAsState()
 
-    val notes by when (listType) {
-        NoteListType.ALL -> viewModel.allNotes.collectAsState()
-        NoteListType.FAVORITES -> viewModel.favoriteNotes.collectAsState()
-        NoteListType.TRASH -> viewModel.deletedNotes.collectAsState()
-        NoteListType.FOLDER -> viewModel.getNotesByFolder(folderId).collectAsState()
+    val notesFlow = remember(listType, folderId) {
+        when (listType) {
+            NoteListType.ALL -> viewModel.allNotes
+            NoteListType.FAVORITES -> viewModel.favoriteNotes
+            NoteListType.TRASH -> viewModel.deletedNotes
+            NoteListType.FOLDER -> viewModel.getNotesByFolder(folderId)
+        }
     }
+    val notes by notesFlow.collectAsState()
 
     val sortedNotes = remember(notes, sortMode) { viewModel.sortNotes(notes, sortMode) }
 
