@@ -27,7 +27,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.PlatformTextStyle
-import androidx.compose.ui.text.ParagraphStyle
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
@@ -144,50 +143,22 @@ fun deserializeLineAlignments(json: String): Map<Int, TextAlign> {
 }
 
 /**
- * VisualTransformation that applies per-character formatting (bold, italic, etc.)
- * and per-line alignment via ParagraphStyle.
+ * VisualTransformation that applies per-character formatting ONLY (bold, italic, etc.)
+ * NO ParagraphStyle — it causes line jumping, text duplication, and height jitter in Compose.
  */
-class FormattingTransformation(
-    private val formats: List<CharFormat>,
-    private val lineAlignments: Map<Int, TextAlign>,
-    private val defaultAlign: TextAlign
-) : VisualTransformation {
+class FormattingTransformation(private val formats: List<CharFormat>) : VisualTransformation {
     override fun filter(text: AnnotatedString): TransformedText {
         val formatted = buildAnnotatedString {
             append(text)
-            // Apply per-character span styles
-            if (formats.isNotEmpty()) {
-                val defaultFmt = CharFormat()
-                var i = 0
-                while (i < text.length && i < formats.size) {
-                    val fmt = formats[i]
-                    val start = i
-                    while (i < text.length && i < formats.size && formats[i] == fmt) i++
-                    if (fmt != defaultFmt) {
-                        addStyle(fmt.toSpanStyle(), start, i)
-                    }
-                }
-            }
-            // Apply per-line paragraph alignment
-            val rawText = text.text
-            if (rawText.isNotEmpty() && lineAlignments.isNotEmpty()) {
-                val lines = rawText.split("\n")
-                var offset = 0
-                for ((lineIdx, line) in lines.withIndex()) {
-                    val lineStart = offset
-                    val lineEnd = offset + line.length
-                    val align = lineAlignments[lineIdx]
-                    if (align != null && align != defaultAlign) {
-                        val composeAlign = when (align) {
-                            TextAlign.LEFT -> androidx.compose.ui.text.style.TextAlign.Start
-                            TextAlign.CENTER -> androidx.compose.ui.text.style.TextAlign.Center
-                            TextAlign.RIGHT -> androidx.compose.ui.text.style.TextAlign.End
-                            TextAlign.JUSTIFY -> androidx.compose.ui.text.style.TextAlign.Justify
-                        }
-                        val paraEnd = if (lineIdx < lines.size - 1) (lineEnd + 1).coerceAtMost(rawText.length) else lineEnd
-                        addStyle(ParagraphStyle(textAlign = composeAlign), lineStart, paraEnd)
-                    }
-                    offset = lineEnd + 1
+            if (formats.isEmpty()) return@buildAnnotatedString
+            val defaultFmt = CharFormat()
+            var i = 0
+            while (i < text.length && i < formats.size) {
+                val fmt = formats[i]
+                val start = i
+                while (i < text.length && i < formats.size && formats[i] == fmt) i++
+                if (fmt != defaultFmt) {
+                    addStyle(fmt.toSpanStyle(), start, i)
                 }
             }
         }
@@ -356,19 +327,6 @@ fun EditorScreen(
         TextAlign.RIGHT -> androidx.compose.ui.text.style.TextAlign.End
         TextAlign.JUSTIFY -> androidx.compose.ui.text.style.TextAlign.Justify
     }
-    val composeTextAlign = when (textAlign) {
-        TextAlign.LEFT -> androidx.compose.ui.text.style.TextAlign.Start
-        TextAlign.CENTER -> androidx.compose.ui.text.style.TextAlign.Center
-        TextAlign.RIGHT -> androidx.compose.ui.text.style.TextAlign.End
-        TextAlign.JUSTIFY -> androidx.compose.ui.text.style.TextAlign.Justify
-    }
-    val alignIcon = when (textAlign) {
-        TextAlign.LEFT -> Icons.Default.FormatAlignLeft
-        TextAlign.CENTER -> Icons.Default.FormatAlignCenter
-        TextAlign.RIGHT -> Icons.Default.FormatAlignRight
-        TextAlign.JUSTIFY -> Icons.Default.FormatAlignJustify
-    }
-
     val lineHeightSp = (fontSize * 1.5f).sp
 
     // Plain TextFieldValue
@@ -378,11 +336,30 @@ fun EditorScreen(
         composition = contentComposition
     )
 
-    // Formatting via VisualTransformation (span styles only, no ParagraphStyle)
+    // Formatting via VisualTransformation (SpanStyle ONLY - no ParagraphStyle!)
     val formatsSnapshot = remember(formatVersion) { charFormats.toList() }
-    val lineAlignSnapshot = remember(alignVersion) { lineAlignments.toMap() }
-    val contentVisualTransformation = remember(formatsSnapshot, lineAlignSnapshot, textAlign) {
-        FormattingTransformation(formatsSnapshot, lineAlignSnapshot, textAlign)
+    val contentVisualTransformation = remember(formatsSnapshot) {
+        FormattingTransformation(formatsSnapshot)
+    }
+
+    // Dynamic text alignment: use current cursor line's alignment
+    // This gives per-line alignment effect without buggy ParagraphStyle
+    val currentLineIdx = remember(contentSelection, contentText) {
+        val cp = contentSelection.start.coerceIn(0, contentText.length)
+        contentText.substring(0, cp).count { it == '\n' }
+    }
+    val effectiveTextAlign = lineAlignments[currentLineIdx] ?: textAlign
+    val composeTextAlignDynamic = when (effectiveTextAlign) {
+        TextAlign.LEFT -> androidx.compose.ui.text.style.TextAlign.Start
+        TextAlign.CENTER -> androidx.compose.ui.text.style.TextAlign.Center
+        TextAlign.RIGHT -> androidx.compose.ui.text.style.TextAlign.End
+        TextAlign.JUSTIFY -> androidx.compose.ui.text.style.TextAlign.Justify
+    }
+    val alignIcon = when (effectiveTextAlign) {
+        TextAlign.LEFT -> Icons.Default.FormatAlignLeft
+        TextAlign.CENTER -> Icons.Default.FormatAlignCenter
+        TextAlign.RIGHT -> Icons.Default.FormatAlignRight
+        TextAlign.JUSTIFY -> Icons.Default.FormatAlignJustify
     }
 
     // Track programmatic text changes
@@ -457,10 +434,13 @@ fun EditorScreen(
     }
 
     // Dynamic separator: calculate how many chars fit in one line
-    val separatorCharCount = remember(fontSize, screenWidthDp) {
-        val availableWidthDp = screenWidthDp - 32
-        val charWidthDp = fontSize * 0.62f
-        if (charWidthDp > 0) ((availableWidthDp / charWidthDp).toInt() - 1).coerceIn(10, 200) else 50
+    // Account for font scale (sp != dp when user has large text setting)
+    val density = LocalDensity.current
+    val fontScale = density.fontScale
+    val separatorCharCount = remember(fontSize, screenWidthDp, fontScale) {
+        val availableWidthDp = screenWidthDp - 34 // 15dp padding * 2 + 4dp safety
+        val charWidthDp = fontSize * fontScale * 0.55f // conservative: "─" is ~0.5-0.6 of fontSize
+        if (charWidthDp > 0) ((availableWidthDp / charWidthDp).toInt() - 2).coerceIn(10, 200) else 40
     }
 
     val titleFontColor = Color(titleFontColorArgb)
@@ -517,10 +497,19 @@ fun EditorScreen(
                                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                                 Text("\u0412\u044b\u0440\u0430\u0432\u043d\u0438\u0432\u0430\u043d\u0438\u0435 \u0442\u0435\u043a\u0441\u0442\u0430", fontSize = 12.sp, color = Color(0xFF888888), modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
                                 Row(modifier = Modifier.padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                                    IconButton(onClick = { textAlign = TextAlign.LEFT; showAlignMenu = false }) { Icon(Icons.Default.FormatAlignLeft, null, tint = if (textAlign == TextAlign.LEFT) Color(0xFFD2691E) else Color(0xFF666666)) }
-                                    IconButton(onClick = { textAlign = TextAlign.CENTER; showAlignMenu = false }) { Icon(Icons.Default.FormatAlignCenter, null, tint = if (textAlign == TextAlign.CENTER) Color(0xFFD2691E) else Color(0xFF666666)) }
-                                    IconButton(onClick = { textAlign = TextAlign.RIGHT; showAlignMenu = false }) { Icon(Icons.Default.FormatAlignRight, null, tint = if (textAlign == TextAlign.RIGHT) Color(0xFFD2691E) else Color(0xFF666666)) }
-                                    IconButton(onClick = { textAlign = TextAlign.JUSTIFY; showAlignMenu = false }) { Icon(Icons.Default.FormatAlignJustify, null, tint = if (textAlign == TextAlign.JUSTIFY) Color(0xFFD2691E) else Color(0xFF666666)) }
+                                    // Per-line alignment: sets alignment for current line + updates global textAlign for rendering
+                                    fun setLineAlign(align: TextAlign) {
+                                        val startIdx = contentText.substring(0, contentSelection.start.coerceIn(0, contentText.length)).count { it == '\n' }
+                                        val endIdx = contentText.substring(0, contentSelection.end.coerceIn(0, contentText.length)).count { it == '\n' }
+                                        for (li in startIdx..endIdx) { lineAlignments[li] = align }
+                                        textAlign = align
+                                        alignVersion++
+                                        showAlignMenu = false
+                                    }
+                                    IconButton(onClick = { setLineAlign(TextAlign.LEFT) }) { Icon(Icons.Default.FormatAlignLeft, null, tint = if (effectiveTextAlign == TextAlign.LEFT) Color(0xFFD2691E) else Color(0xFF666666)) }
+                                    IconButton(onClick = { setLineAlign(TextAlign.CENTER) }) { Icon(Icons.Default.FormatAlignCenter, null, tint = if (effectiveTextAlign == TextAlign.CENTER) Color(0xFFD2691E) else Color(0xFF666666)) }
+                                    IconButton(onClick = { setLineAlign(TextAlign.RIGHT) }) { Icon(Icons.Default.FormatAlignRight, null, tint = if (effectiveTextAlign == TextAlign.RIGHT) Color(0xFFD2691E) else Color(0xFF666666)) }
+                                    IconButton(onClick = { setLineAlign(TextAlign.JUSTIFY) }) { Icon(Icons.Default.FormatAlignJustify, null, tint = if (effectiveTextAlign == TextAlign.JUSTIFY) Color(0xFFD2691E) else Color(0xFF666666)) }
                                 }
                                 Spacer(modifier = Modifier.height(4.dp))
                             }
@@ -808,7 +797,7 @@ fun EditorScreen(
                         style = TextStyle(
                             fontSize = fontSize.sp,
                             color = Color(0xFFBBBBBB),
-                            textAlign = composeTextAlign
+                            textAlign = composeTextAlignDynamic
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
@@ -824,7 +813,7 @@ fun EditorScreen(
                         fontSize = fontSize.sp,
                         color = contentFontColor,
                         lineHeight = lineHeightSp,
-                        textAlign = composeTextAlign,
+                        textAlign = composeTextAlignDynamic,
                         platformStyle = PlatformTextStyle(includeFontPadding = false),
                         lineHeightStyle = LineHeightStyle(
                             alignment = LineHeightStyle.Alignment.Bottom,

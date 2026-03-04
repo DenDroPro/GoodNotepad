@@ -290,12 +290,33 @@ fun CreateNoteDialog(onDismiss: () -> Unit, onCreate: (String, HeaderColor) -> U
                 Spacer(modifier = Modifier.height(16.dp))
                 Text("\u0426\u0432\u0435\u0442 \u0448\u0430\u043f\u043a\u0438:", fontSize = 14.sp, color = Color(0xFF666666))
                 Spacer(modifier = Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    HeaderColor.entries.forEach { color ->
-                        Box(modifier = Modifier.size(36.dp).clip(CircleShape).background(if (color == HeaderColor.NONE) Color(0xFFCCCCCC) else color.color), contentAlignment = Alignment.Center) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(modifier = Modifier.size(36.dp).clip(CircleShape).background(Color(0xFFCCCCCC)), contentAlignment = Alignment.Center) {
+                        IconButton(onClick = { selectedColor = HeaderColor.NONE }) {
+                            if (selectedColor == HeaderColor.NONE) Icon(Icons.Default.Close, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text("\u0411\u0435\u0437 \u0446\u0432\u0435\u0442\u0430", fontSize = 12.sp, color = Color(0xFF888888))
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                Text("\u041f\u0430\u0441\u0442\u0435\u043b\u044c\u043d\u044b\u0435", fontSize = 12.sp, color = Color(0xFF888888))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                    HeaderColor.entries.filter { it.name.startsWith("PASTEL") }.forEach { color ->
+                        Box(modifier = Modifier.size(36.dp).clip(CircleShape).background(color.color), contentAlignment = Alignment.Center) {
                             IconButton(onClick = { selectedColor = color }) {
-                                if (color == HeaderColor.NONE && selectedColor == HeaderColor.NONE) Icon(Icons.Default.Close, null, tint = Color.White, modifier = Modifier.size(16.dp))
-                                else if (color == selectedColor) Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(16.dp))
+                                if (color == selectedColor) Icon(Icons.Default.Check, null, tint = Color(0xFF555555), modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                Text("\u042f\u0440\u043a\u0438\u0435", fontSize = 12.sp, color = Color(0xFF888888))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                    HeaderColor.entries.filter { it.name.startsWith("VIBRANT") }.forEach { color ->
+                        Box(modifier = Modifier.size(36.dp).clip(CircleShape).background(color.color), contentAlignment = Alignment.Center) {
+                            IconButton(onClick = { selectedColor = color }) {
+                                if (color == selectedColor) Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(16.dp))
                             }
                         }
                     }
@@ -382,12 +403,33 @@ fun HeaderColorDialog(currentColor: HeaderColor, onDismiss: () -> Unit, onColorS
         onDismissRequest = onDismiss,
         title = { Text("\u0426\u0432\u0435\u0442 \u0448\u0430\u043f\u043a\u0438") },
         text = {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                HeaderColor.entries.forEach { color ->
-                    Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(if (color == HeaderColor.NONE) Color(0xFFCCCCCC) else color.color), contentAlignment = Alignment.Center) {
-                        IconButton(onClick = { selected = color }) {
-                            if (color == HeaderColor.NONE) Icon(Icons.Default.Close, null, tint = Color.White, modifier = Modifier.size(18.dp))
-                            else if (color == selected) Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(18.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(Color(0xFFCCCCCC)), contentAlignment = Alignment.Center) {
+                        IconButton(onClick = { selected = HeaderColor.NONE }) {
+                            if (selected == HeaderColor.NONE) Icon(Icons.Default.Close, null, tint = Color.White, modifier = Modifier.size(18.dp))
+                        }
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text("\u0411\u0435\u0437 \u0446\u0432\u0435\u0442\u0430", fontSize = 14.sp, color = Color(0xFF666666))
+                }
+                Text("\u041f\u0430\u0441\u0442\u0435\u043b\u044c\u043d\u044b\u0435", fontSize = 12.sp, color = Color(0xFF888888))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+                    HeaderColor.entries.filter { it.name.startsWith("PASTEL") }.forEach { color ->
+                        Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(color.color), contentAlignment = Alignment.Center) {
+                            IconButton(onClick = { selected = color }) {
+                                if (color == selected) Icon(Icons.Default.Check, null, tint = Color(0xFF555555), modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    }
+                }
+                Text("\u042f\u0440\u043a\u0438\u0435", fontSize = 12.sp, color = Color(0xFF888888))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+                    HeaderColor.entries.filter { it.name.startsWith("VIBRANT") }.forEach { color ->
+                        Box(modifier = Modifier.size(40.dp).clip(CircleShape).background(color.color), contentAlignment = Alignment.Center) {
+                            IconButton(onClick = { selected = color }) {
+                                if (color == selected) Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(18.dp))
+                            }
                         }
                     }
                 }
