@@ -27,6 +27,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.ParagraphStyle
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
@@ -120,23 +121,73 @@ fun deserializeFormats(json: String, textLength: Int): List<CharFormat> {
     return result
 }
 
+fun serializeLineAlignments(alignments: Map<Int, TextAlign>): String {
+    if (alignments.isEmpty()) return ""
+    val obj = JSONObject()
+    alignments.forEach { (lineIdx, align) -> obj.put(lineIdx.toString(), align.name) }
+    return obj.toString()
+}
+
+fun deserializeLineAlignments(json: String): Map<Int, TextAlign> {
+    if (json.isBlank()) return emptyMap()
+    val result = mutableMapOf<Int, TextAlign>()
+    try {
+        val obj = JSONObject(json)
+        val keys = obj.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val alignName = obj.getString(key)
+            result[key.toInt()] = try { TextAlign.valueOf(alignName) } catch (_: Exception) { TextAlign.LEFT }
+        }
+    } catch (_: Exception) {}
+    return result
+}
+
 /**
- * VisualTransformation that applies per-character formatting only (bold, italic, etc.)
- * Does NOT apply ParagraphStyle to avoid line height issues and Enter jumping bugs.
+ * VisualTransformation that applies per-character formatting (bold, italic, etc.)
+ * and per-line alignment via ParagraphStyle.
  */
-class FormattingTransformation(private val formats: List<CharFormat>) : VisualTransformation {
+class FormattingTransformation(
+    private val formats: List<CharFormat>,
+    private val lineAlignments: Map<Int, TextAlign>,
+    private val defaultAlign: TextAlign
+) : VisualTransformation {
     override fun filter(text: AnnotatedString): TransformedText {
         val formatted = buildAnnotatedString {
             append(text)
-            if (formats.isEmpty()) return@buildAnnotatedString
-            val defaultFmt = CharFormat()
-            var i = 0
-            while (i < text.length && i < formats.size) {
-                val fmt = formats[i]
-                val start = i
-                while (i < text.length && i < formats.size && formats[i] == fmt) i++
-                if (fmt != defaultFmt) {
-                    addStyle(fmt.toSpanStyle(), start, i)
+            // Apply per-character span styles
+            if (formats.isNotEmpty()) {
+                val defaultFmt = CharFormat()
+                var i = 0
+                while (i < text.length && i < formats.size) {
+                    val fmt = formats[i]
+                    val start = i
+                    while (i < text.length && i < formats.size && formats[i] == fmt) i++
+                    if (fmt != defaultFmt) {
+                        addStyle(fmt.toSpanStyle(), start, i)
+                    }
+                }
+            }
+            // Apply per-line paragraph alignment
+            val rawText = text.text
+            if (rawText.isNotEmpty() && lineAlignments.isNotEmpty()) {
+                val lines = rawText.split("\n")
+                var offset = 0
+                for ((lineIdx, line) in lines.withIndex()) {
+                    val lineStart = offset
+                    val lineEnd = offset + line.length
+                    val align = lineAlignments[lineIdx]
+                    if (align != null && align != defaultAlign) {
+                        val composeAlign = when (align) {
+                            TextAlign.LEFT -> androidx.compose.ui.text.style.TextAlign.Start
+                            TextAlign.CENTER -> androidx.compose.ui.text.style.TextAlign.Center
+                            TextAlign.RIGHT -> androidx.compose.ui.text.style.TextAlign.End
+                            TextAlign.JUSTIFY -> androidx.compose.ui.text.style.TextAlign.Justify
+                        }
+                        val paraEnd = if (lineIdx < lines.size - 1) (lineEnd + 1).coerceAtMost(rawText.length) else lineEnd
+                        addStyle(ParagraphStyle(textAlign = composeAlign), lineStart, paraEnd)
+                    }
+                    offset = lineEnd + 1
                 }
             }
         }
@@ -148,7 +199,8 @@ class FormattingTransformation(private val formats: List<CharFormat>) : VisualTr
 data class UndoSnapshot(
     val text: String,
     val selection: TextRange,
-    val formats: List<CharFormat>
+    val formats: List<CharFormat>,
+    val lineAlignments: Map<Int, TextAlign> = emptyMap()
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -181,7 +233,9 @@ fun EditorScreen(
     var contentFontColorArgb by remember { mutableIntStateOf(0xFF333333.toInt()) }
 
     val charFormats = remember { mutableListOf<CharFormat>() }
+    val lineAlignments = remember { mutableMapOf<Int, TextAlign>() }
     var formatVersion by remember { mutableIntStateOf(0) }
+    var alignVersion by remember { mutableIntStateOf(0) }
     var activeFormat by remember { mutableStateOf(CharFormat()) }
 
     var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
@@ -192,7 +246,7 @@ fun EditorScreen(
     var undoVersion by remember { mutableIntStateOf(0) }
 
     fun pushUndo() {
-        undoStack.add(UndoSnapshot(contentText, contentSelection, charFormats.toList()))
+        undoStack.add(UndoSnapshot(contentText, contentSelection, charFormats.toList(), lineAlignments.toMap()))
         if (undoStack.size > 50) undoStack.removeAt(0)
         redoStack.clear()
         undoVersion++
@@ -200,25 +254,31 @@ fun EditorScreen(
 
     fun performUndo() {
         if (undoStack.isEmpty()) return
-        redoStack.add(UndoSnapshot(contentText, contentSelection, charFormats.toList()))
+        redoStack.add(UndoSnapshot(contentText, contentSelection, charFormats.toList(), lineAlignments.toMap()))
         val snap = undoStack.removeAt(undoStack.lastIndex)
         contentText = snap.text
         contentSelection = snap.selection
         charFormats.clear()
         charFormats.addAll(snap.formats)
+        lineAlignments.clear()
+        lineAlignments.putAll(snap.lineAlignments)
         formatVersion++
+        alignVersion++
         undoVersion++
     }
 
     fun performRedo() {
         if (redoStack.isEmpty()) return
-        undoStack.add(UndoSnapshot(contentText, contentSelection, charFormats.toList()))
+        undoStack.add(UndoSnapshot(contentText, contentSelection, charFormats.toList(), lineAlignments.toMap()))
         val snap = redoStack.removeAt(redoStack.lastIndex)
         contentText = snap.text
         contentSelection = snap.selection
         charFormats.clear()
         charFormats.addAll(snap.formats)
+        lineAlignments.clear()
+        lineAlignments.putAll(snap.lineAlignments)
         formatVersion++
+        alignVersion++
         undoVersion++
     }
 
@@ -228,9 +288,11 @@ fun EditorScreen(
         titleText = ""
         contentText = ""
         charFormats.clear()
+        lineAlignments.clear()
         undoStack.clear()
         redoStack.clear()
         formatVersion++
+        alignVersion++
         undoVersion++
         viewModel.loadNote(noteId)
         // Wait until the correct note arrives in the flow
@@ -241,7 +303,10 @@ fun EditorScreen(
             contentSelection = TextRange(loadedNote.content.length)
             charFormats.clear()
             charFormats.addAll(deserializeFormats(loadedNote.formatting, loadedNote.content.length))
+            lineAlignments.clear()
+            lineAlignments.putAll(deserializeLineAlignments(loadedNote.lineAlignments))
             formatVersion++
+            alignVersion++
             noteTheme = loadedNote.theme
             pageStyle = loadedNote.pageStyle
             headerColor = loadedNote.headerColor
@@ -257,12 +322,13 @@ fun EditorScreen(
     }
 
     // Save note when state changes
-    LaunchedEffect(titleText, contentText, textAlign, titleTextAlign, pageStyle, noteTheme, headerColor, fontSize, noteLineOpacity, formatVersion, titleFontColorArgb, contentFontColorArgb) {
+    LaunchedEffect(titleText, contentText, textAlign, titleTextAlign, pageStyle, noteTheme, headerColor, fontSize, noteLineOpacity, formatVersion, alignVersion, titleFontColorArgb, contentFontColorArgb) {
         if (initialized) {
             note?.let {
                 viewModel.saveNote(it.copy(
                     title = titleText, content = contentText, preview = contentText.take(100),
                     formatting = serializeFormats(charFormats),
+                    lineAlignments = serializeLineAlignments(lineAlignments),
                     titleFontColor = titleFontColorArgb,
                     contentFontColor = contentFontColorArgb,
                     theme = noteTheme, pageStyle = pageStyle, headerColor = headerColor,
@@ -314,8 +380,9 @@ fun EditorScreen(
 
     // Formatting via VisualTransformation (span styles only, no ParagraphStyle)
     val formatsSnapshot = remember(formatVersion) { charFormats.toList() }
-    val contentVisualTransformation = remember(formatsSnapshot) {
-        FormattingTransformation(formatsSnapshot)
+    val lineAlignSnapshot = remember(alignVersion) { lineAlignments.toMap() }
+    val contentVisualTransformation = remember(formatsSnapshot, lineAlignSnapshot, textAlign) {
+        FormattingTransformation(formatsSnapshot, lineAlignSnapshot, textAlign)
     }
 
     // Track programmatic text changes
@@ -391,9 +458,9 @@ fun EditorScreen(
 
     // Dynamic separator: calculate how many chars fit in one line
     val separatorCharCount = remember(fontSize, screenWidthDp) {
-        val availableWidthDp = screenWidthDp - 30
-        val charWidthDp = fontSize * 0.57f
-        if (charWidthDp > 0) (availableWidthDp / charWidthDp).toInt().coerceIn(10, 200) else 50
+        val availableWidthDp = screenWidthDp - 32
+        val charWidthDp = fontSize * 0.62f
+        if (charWidthDp > 0) ((availableWidthDp / charWidthDp).toInt() - 1).coerceIn(10, 200) else 50
     }
 
     val titleFontColor = Color(titleFontColorArgb)
