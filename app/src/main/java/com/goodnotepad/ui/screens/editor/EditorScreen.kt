@@ -25,7 +25,9 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.ParagraphStyle
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
@@ -143,22 +145,63 @@ fun deserializeLineAlignments(json: String): Map<Int, TextAlign> {
 }
 
 /**
- * VisualTransformation that applies per-character formatting ONLY (bold, italic, etc.)
- * NO ParagraphStyle — it causes line jumping, text duplication, and height jitter in Compose.
+ * VisualTransformation that applies:
+ * 1. Per-character formatting via SpanStyle (bold, italic, etc.)
+ * 2. Per-line alignment via ParagraphStyle (textAlign ONLY — no lineHeight override!)
+ *
+ * IMPORTANT: ParagraphStyle must NOT set lineHeight or lineSpacing — only textAlign.
+ * Setting lineHeight in ParagraphStyle causes jitter and text duplication.
  */
-class FormattingTransformation(private val formats: List<CharFormat>) : VisualTransformation {
+class FormattingTransformation(
+    private val formats: List<CharFormat>,
+    private val lineAlignments: Map<Int, TextAlign>,
+    private val defaultAlign: TextAlign
+) : VisualTransformation {
     override fun filter(text: AnnotatedString): TransformedText {
         val formatted = buildAnnotatedString {
             append(text)
-            if (formats.isEmpty()) return@buildAnnotatedString
-            val defaultFmt = CharFormat()
-            var i = 0
-            while (i < text.length && i < formats.size) {
-                val fmt = formats[i]
-                val start = i
-                while (i < text.length && i < formats.size && formats[i] == fmt) i++
-                if (fmt != defaultFmt) {
-                    addStyle(fmt.toSpanStyle(), start, i)
+            // Apply per-character SpanStyle
+            if (formats.isNotEmpty()) {
+                val defaultFmt = CharFormat()
+                var i = 0
+                while (i < text.length && i < formats.size) {
+                    val fmt = formats[i]
+                    val start = i
+                    while (i < text.length && i < formats.size && formats[i] == fmt) i++
+                    if (fmt != defaultFmt) {
+                        addStyle(fmt.toSpanStyle(), start, i)
+                    }
+                }
+            }
+            // Apply per-line ParagraphStyle (textAlign ONLY)
+            if (text.isNotEmpty()) {
+                val str = text.text
+                var lineIdx = 0
+                var lineStart = 0
+                for (pos in str.indices) {
+                    if (str[pos] == '\n') {
+                        val align = lineAlignments[lineIdx] ?: defaultAlign
+                        val composeAlign = when (align) {
+                            TextAlign.LEFT -> androidx.compose.ui.text.style.TextAlign.Start
+                            TextAlign.CENTER -> androidx.compose.ui.text.style.TextAlign.Center
+                            TextAlign.RIGHT -> androidx.compose.ui.text.style.TextAlign.End
+                            TextAlign.JUSTIFY -> androidx.compose.ui.text.style.TextAlign.Justify
+                        }
+                        addStyle(ParagraphStyle(textAlign = composeAlign), lineStart, pos + 1)
+                        lineStart = pos + 1
+                        lineIdx++
+                    }
+                }
+                // Last line (no trailing \n)
+                if (lineStart <= str.lastIndex) {
+                    val align = lineAlignments[lineIdx] ?: defaultAlign
+                    val composeAlign = when (align) {
+                        TextAlign.LEFT -> androidx.compose.ui.text.style.TextAlign.Start
+                        TextAlign.CENTER -> androidx.compose.ui.text.style.TextAlign.Center
+                        TextAlign.RIGHT -> androidx.compose.ui.text.style.TextAlign.End
+                        TextAlign.JUSTIFY -> androidx.compose.ui.text.style.TextAlign.Justify
+                    }
+                    addStyle(ParagraphStyle(textAlign = composeAlign), lineStart, str.length)
                 }
             }
         }
@@ -336,25 +379,19 @@ fun EditorScreen(
         composition = contentComposition
     )
 
-    // Formatting via VisualTransformation (SpanStyle ONLY - no ParagraphStyle!)
+    // Formatting via VisualTransformation (SpanStyle + ParagraphStyle for per-line alignment)
     val formatsSnapshot = remember(formatVersion) { charFormats.toList() }
-    val contentVisualTransformation = remember(formatsSnapshot) {
-        FormattingTransformation(formatsSnapshot)
+    val lineAlignSnapshot = remember(alignVersion) { lineAlignments.toMap() }
+    val contentVisualTransformation = remember(formatsSnapshot, lineAlignSnapshot, textAlign) {
+        FormattingTransformation(formatsSnapshot, lineAlignSnapshot, textAlign)
     }
 
-    // Dynamic text alignment: use current cursor line's alignment
-    // This gives per-line alignment effect without buggy ParagraphStyle
+    // Current cursor line index for UI (alignment icon, button highlight)
     val currentLineIdx = remember(contentSelection, contentText) {
         val cp = contentSelection.start.coerceIn(0, contentText.length)
         contentText.substring(0, cp).count { it == '\n' }
     }
     val effectiveTextAlign = lineAlignments[currentLineIdx] ?: textAlign
-    val composeTextAlignDynamic = when (effectiveTextAlign) {
-        TextAlign.LEFT -> androidx.compose.ui.text.style.TextAlign.Start
-        TextAlign.CENTER -> androidx.compose.ui.text.style.TextAlign.Center
-        TextAlign.RIGHT -> androidx.compose.ui.text.style.TextAlign.End
-        TextAlign.JUSTIFY -> androidx.compose.ui.text.style.TextAlign.Justify
-    }
     val alignIcon = when (effectiveTextAlign) {
         TextAlign.LEFT -> Icons.Default.FormatAlignLeft
         TextAlign.CENTER -> Icons.Default.FormatAlignCenter
@@ -433,14 +470,14 @@ fun EditorScreen(
         else activeFormat.strikethrough
     }
 
-    // Dynamic separator: calculate how many chars fit in one line
-    // Account for font scale (sp != dp when user has large text setting)
+    // Dynamic separator: measure actual text area width in pixels
     val density = LocalDensity.current
-    val fontScale = density.fontScale
-    val separatorCharCount = remember(fontSize, screenWidthDp, fontScale) {
-        val availableWidthDp = screenWidthDp - 34 // 15dp padding * 2 + 4dp safety
-        val charWidthDp = fontSize * fontScale * 0.55f // conservative: "─" is ~0.5-0.6 of fontSize
-        if (charWidthDp > 0) ((availableWidthDp / charWidthDp).toInt() - 2).coerceIn(10, 200) else 40
+    var contentAreaWidthPx by remember { mutableIntStateOf(0) }
+    val separatorCharCount = remember(fontSize, contentAreaWidthPx, density.fontScale) {
+        if (contentAreaWidthPx <= 0) return@remember 40
+        // "─" (U+2500) width ≈ 0.5 * fontSize in sp, converted to px
+        val charWidthPx = fontSize * density.fontScale * density.density * 0.5f
+        if (charWidthPx > 0) ((contentAreaWidthPx / charWidthPx).toInt() - 1).coerceIn(10, 300) else 40
     }
 
     val titleFontColor = Color(titleFontColorArgb)
@@ -704,9 +741,9 @@ fun EditorScreen(
                     .fillMaxWidth()
                     .defaultMinSize(minHeight = screenHeightDp.dp)
             ) {
-                // Line drawing layer
+                // UNIFORM grid drawing layer — uses fixed lineHeight spacing
+                // Does NOT depend on textLayoutResult to avoid mismatch between text and empty lines
                 val lineColor = Color.Black.copy(alpha = noteLineOpacity)
-                val currentTextLayout = textLayoutResult
                 val currentPageStyle = pageStyle
                 val lhSp = lineHeightSp
 
@@ -717,75 +754,40 @@ fun EditorScreen(
                             val lhPx = lhSp.toPx()
                             val padTopPx = 8.dp.toPx()
 
-                            if (currentTextLayout != null && currentTextLayout.lineCount > 0) {
-                                when (currentPageStyle) {
-                                    PageStyle.LINED -> {
-                                        for (i in 0 until currentTextLayout.lineCount) {
-                                            val lineBottom = currentTextLayout.getLineBottom(i) + padTopPx
-                                            drawLine(lineColor, Offset(0f, lineBottom), Offset(size.width, lineBottom), strokeWidth = 0.8f)
-                                        }
-                                        val lastBottom = currentTextLayout.getLineBottom(currentTextLayout.lineCount - 1) + padTopPx
-                                        var y = lastBottom + lhPx
-                                        while (y < size.height) {
-                                            drawLine(lineColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 0.8f)
-                                            y += lhPx
-                                        }
+                            // Start first grid line at padTopPx + lhPx (bottom of first text line)
+                            when (currentPageStyle) {
+                                PageStyle.LINED -> {
+                                    var y = padTopPx + lhPx
+                                    while (y < size.height) {
+                                        drawLine(lineColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 0.8f)
+                                        y += lhPx
                                     }
-                                    PageStyle.GRID -> {
-                                        for (i in 0 until currentTextLayout.lineCount) {
-                                            val lineBottom = currentTextLayout.getLineBottom(i) + padTopPx
-                                            drawLine(lineColor, Offset(0f, lineBottom), Offset(size.width, lineBottom), strokeWidth = 0.5f)
-                                        }
-                                        val lastBottom = currentTextLayout.getLineBottom(currentTextLayout.lineCount - 1) + padTopPx
-                                        var y = lastBottom + lhPx
-                                        while (y < size.height) {
-                                            drawLine(lineColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 0.5f)
-                                            y += lhPx
-                                        }
+                                }
+                                PageStyle.GRID -> {
+                                    var y = padTopPx + lhPx
+                                    while (y < size.height) {
+                                        drawLine(lineColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 0.5f)
+                                        y += lhPx
+                                    }
+                                    var x = lhPx
+                                    while (x < size.width) {
+                                        drawLine(lineColor, Offset(x, padTopPx), Offset(x, size.height), strokeWidth = 0.5f)
+                                        x += lhPx
+                                    }
+                                }
+                                PageStyle.DOTTED -> {
+                                    val dotColor = Color.Black.copy(alpha = (noteLineOpacity * 1.5f).coerceAtMost(1f))
+                                    var y = padTopPx + lhPx
+                                    while (y < size.height) {
                                         var x = lhPx
                                         while (x < size.width) {
-                                            drawLine(lineColor, Offset(x, padTopPx), Offset(x, size.height), strokeWidth = 0.5f)
+                                            drawCircle(dotColor, radius = 1.5f, center = Offset(x, y))
                                             x += lhPx
                                         }
+                                        y += lhPx
                                     }
-                                    PageStyle.DOTTED -> {
-                                        val dotColor = Color.Black.copy(alpha = (noteLineOpacity * 1.5f).coerceAtMost(1f))
-                                        for (i in 0 until currentTextLayout.lineCount) {
-                                            val lineBottom = currentTextLayout.getLineBottom(i) + padTopPx
-                                            var x = lhPx
-                                            while (x < size.width) {
-                                                drawCircle(dotColor, radius = 1.5f, center = Offset(x, lineBottom))
-                                                x += lhPx
-                                            }
-                                        }
-                                        val lastBottom = currentTextLayout.getLineBottom(currentTextLayout.lineCount - 1) + padTopPx
-                                        var y = lastBottom + lhPx
-                                        while (y < size.height) {
-                                            var x = lhPx
-                                            while (x < size.width) {
-                                                drawCircle(dotColor, radius = 1.5f, center = Offset(x, y))
-                                                x += lhPx
-                                            }
-                                            y += lhPx
-                                        }
-                                    }
-                                    PageStyle.BLANK -> {}
                                 }
-                            } else {
-                                when (currentPageStyle) {
-                                    PageStyle.LINED -> {
-                                        var y = padTopPx + lhPx; while (y < size.height) { drawLine(lineColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 0.8f); y += lhPx }
-                                    }
-                                    PageStyle.GRID -> {
-                                        var y = padTopPx + lhPx; while (y < size.height) { drawLine(lineColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 0.5f); y += lhPx }
-                                        var x = lhPx; while (x < size.width) { drawLine(lineColor, Offset(x, padTopPx), Offset(x, size.height), strokeWidth = 0.5f); x += lhPx }
-                                    }
-                                    PageStyle.DOTTED -> {
-                                        val dotColor = Color.Black.copy(alpha = (noteLineOpacity * 1.5f).coerceAtMost(1f))
-                                        var y = padTopPx + lhPx; while (y < size.height) { var x = lhPx; while (x < size.width) { drawCircle(dotColor, radius = 1.5f, center = Offset(x, y)); x += lhPx }; y += lhPx }
-                                    }
-                                    PageStyle.BLANK -> {}
-                                }
+                                PageStyle.BLANK -> {}
                             }
                         }
                 )
@@ -797,7 +799,7 @@ fun EditorScreen(
                         style = TextStyle(
                             fontSize = fontSize.sp,
                             color = Color(0xFFBBBBBB),
-                            textAlign = composeTextAlignDynamic
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Start
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
@@ -813,7 +815,6 @@ fun EditorScreen(
                         fontSize = fontSize.sp,
                         color = contentFontColor,
                         lineHeight = lineHeightSp,
-                        textAlign = composeTextAlignDynamic,
                         platformStyle = PlatformTextStyle(includeFontPadding = false),
                         lineHeightStyle = LineHeightStyle(
                             alignment = LineHeightStyle.Alignment.Bottom,
@@ -825,6 +826,7 @@ fun EditorScreen(
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = screenHeightDp.dp)
                         .padding(horizontal = 15.dp, vertical = 8.dp)
+                        .onSizeChanged { size -> contentAreaWidthPx = size.width }
                 )
             }
         }

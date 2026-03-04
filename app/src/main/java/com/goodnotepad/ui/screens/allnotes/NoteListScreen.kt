@@ -179,12 +179,27 @@ fun NoteListScreen(
             },
             floatingActionButton = {
                 if (listType == NoteListType.FOLDER) {
-                    SmallFloatingActionButton(
-                        onClick = { showCreateNoteDialog = true },
-                        containerColor = AppFab,
-                        contentColor = Color.White
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(start = 32.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(Icons.Default.Add, contentDescription = "\u041d\u043e\u0432\u0430\u044f \u0437\u0430\u043c\u0435\u0442\u043a\u0430")
+                        // Back arrow button (bottom-left)
+                        SmallFloatingActionButton(
+                            onClick = onNavigateBack,
+                            containerColor = Color(0xFFD2691E),
+                            contentColor = Color.White
+                        ) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = "\u041d\u0430\u0437\u0430\u0434")
+                        }
+                        // Create note button (bottom-right)
+                        SmallFloatingActionButton(
+                            onClick = { showCreateNoteDialog = true },
+                            containerColor = AppFab,
+                            contentColor = Color.White
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = "\u041d\u043e\u0432\u0430\u044f \u0437\u0430\u043c\u0435\u0442\u043a\u0430")
+                        }
                     }
                 }
             },
@@ -243,7 +258,7 @@ fun NoteListScreen(
         CreateNoteDialog(
             onDismiss = { showCreateNoteDialog = false },
             onCreate = { name, headerColor ->
-                viewModel.createNoteWithDetails(folderId = folderId, title = name, headerColor = headerColor) { noteId -> onNavigateToEditor(noteId) }
+                viewModel.createNoteWithDetails(folderId = folderId, title = name, headerColor = headerColor) { /* don't auto-open */ }
                 showCreateNoteDialog = false
             }
         )
