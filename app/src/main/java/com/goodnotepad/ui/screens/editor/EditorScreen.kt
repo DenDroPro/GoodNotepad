@@ -726,14 +726,10 @@ fun EditorScreen(
                                 val w = width.toFloat()
                                 val h = height.toFloat()
 
-                                // Collect Y positions from actual text layout
+                                // Fixed-interval grid: all lines at uniform spacing
+                                // This prevents height jumps when Enter is pressed
                                 val yPositions = mutableListOf<Float>()
-                                for (i in 0 until lay.lineCount) {
-                                    yPositions.add(padTop + lay.getLineBottom(i).toFloat())
-                                }
-                                // Continue with fixed intervals below text
-                                val lastY = if (yPositions.isNotEmpty()) yPositions.last() else padTop
-                                var y = lastY + lh
+                                var y = padTop + lh
                                 while (y < h + scrollY) {
                                     yPositions.add(y)
                                     y += lh
@@ -796,6 +792,10 @@ fun EditorScreen(
                         setTextSize(TypedValue.COMPLEX_UNIT_SP, currentFontSize.toFloat())
                         setTextColor(currentTextColor)
                         setLineSpacing(0f, 1.5f)
+                        // Disable fallback line spacing (API 28+) to prevent varying line heights
+                        if (android.os.Build.VERSION.SDK_INT >= 28) {
+                            isFallbackLineSpacing = false
+                        }
                         gravity = Gravity.TOP or Gravity.START
                         minHeight = ctx.resources.displayMetrics.heightPixels
                         isSingleLine = false
