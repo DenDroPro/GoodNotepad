@@ -147,32 +147,17 @@ fun deserializeLineAlignments(json: String): Map<Int, TextAlign> {
 }
 
 /**
- * VisualTransformation that applies:
- * 1. Per-character formatting via SpanStyle (bold, italic, etc.)
- * 2. Per-line alignment via ParagraphStyle (textAlign ONLY)
- *
- * CRITICAL: ParagraphStyle must NOT set lineHeight or lineHeightStyle!
- * Setting lineHeight in ParagraphStyle DOUBLES the effective line spacing.
- * Instead, ParagraphStyle inherits lineHeight from the TextStyle on BasicTextField.
- * TextStyle uses Trim.None so creating new paragraphs doesn't change spacing.
+ * VisualTransformation that applies per-character formatting via SpanStyle.
+ * NO ParagraphStyle — ParagraphStyle in BasicTextField fundamentally breaks
+ * text layout (causes jumps, double spacing, misalignment with grid lines).
+ * Alignment is handled via textStyle.textAlign on BasicTextField instead.
  */
 class FormattingTransformation(
-    private val formats: List<CharFormat>,
-    private val lineAlignments: Map<Int, TextAlign>,
-    private val defaultAlign: TextAlign
+    private val formats: List<CharFormat>
 ) : VisualTransformation {
-
-    private fun mapAlign(align: TextAlign): androidx.compose.ui.text.style.TextAlign = when (align) {
-        TextAlign.LEFT -> androidx.compose.ui.text.style.TextAlign.Start
-        TextAlign.CENTER -> androidx.compose.ui.text.style.TextAlign.Center
-        TextAlign.RIGHT -> androidx.compose.ui.text.style.TextAlign.End
-        TextAlign.JUSTIFY -> androidx.compose.ui.text.style.TextAlign.Justify
-    }
-
     override fun filter(text: AnnotatedString): TransformedText {
         val formatted = buildAnnotatedString {
             append(text)
-            // Apply per-character SpanStyle
             if (formats.isNotEmpty()) {
                 val defaultFmt = CharFormat()
                 var i = 0
@@ -183,25 +168,6 @@ class FormattingTransformation(
                     if (fmt != defaultFmt) {
                         addStyle(fmt.toSpanStyle(), start, i)
                     }
-                }
-            }
-            // Apply per-line ParagraphStyle (textAlign ONLY — inherits lineHeight from TextStyle)
-            if (text.isNotEmpty()) {
-                val str = text.text
-                var lineIdx = 0
-                var lineStart = 0
-                for (pos in str.indices) {
-                    if (str[pos] == '\n') {
-                        val align = lineAlignments[lineIdx] ?: defaultAlign
-                        addStyle(ParagraphStyle(textAlign = mapAlign(align)), lineStart, pos + 1)
-                        lineStart = pos + 1
-                        lineIdx++
-                    }
-                }
-                // Last line (no trailing \n)
-                if (lineStart <= str.lastIndex) {
-                    val align = lineAlignments[lineIdx] ?: defaultAlign
-                    addStyle(ParagraphStyle(textAlign = mapAlign(align)), lineStart, str.length)
                 }
             }
         }
@@ -379,11 +345,10 @@ fun EditorScreen(
         composition = contentComposition
     )
 
-    // Formatting via VisualTransformation (SpanStyle + ParagraphStyle for per-line alignment)
+    // Formatting via VisualTransformation (SpanStyle only — no ParagraphStyle)
     val formatsSnapshot = remember(formatVersion) { charFormats.toList() }
-    val lineAlignSnapshot = remember(alignVersion) { lineAlignments.toMap() }
-    val contentVisualTransformation = remember(formatsSnapshot, lineAlignSnapshot, textAlign) {
-        FormattingTransformation(formatsSnapshot, lineAlignSnapshot, textAlign)
+    val contentVisualTransformation = remember(formatsSnapshot) {
+        FormattingTransformation(formatsSnapshot)
     }
 
     // Current cursor line index for UI (alignment icon, button highlight)
@@ -397,6 +362,13 @@ fun EditorScreen(
         TextAlign.CENTER -> Icons.Default.FormatAlignCenter
         TextAlign.RIGHT -> Icons.Default.FormatAlignRight
         TextAlign.JUSTIFY -> Icons.Default.FormatAlignJustify
+    }
+    // Map our enum to Compose textAlign for TextStyle (dynamic, follows cursor line)
+    val composeTextAlign = when (effectiveTextAlign) {
+        TextAlign.LEFT -> androidx.compose.ui.text.style.TextAlign.Start
+        TextAlign.CENTER -> androidx.compose.ui.text.style.TextAlign.Center
+        TextAlign.RIGHT -> androidx.compose.ui.text.style.TextAlign.End
+        TextAlign.JUSTIFY -> androidx.compose.ui.text.style.TextAlign.Justify
     }
 
     // Track programmatic text changes
@@ -815,10 +787,11 @@ fun EditorScreen(
                         fontSize = fontSize.sp,
                         color = contentFontColor,
                         lineHeight = lineHeightSp,
+                        textAlign = composeTextAlign,
                         platformStyle = PlatformTextStyle(includeFontPadding = false),
                         lineHeightStyle = LineHeightStyle(
                             alignment = LineHeightStyle.Alignment.Bottom,
-                            trim = LineHeightStyle.Trim.None
+                            trim = LineHeightStyle.Trim.FirstLineTop
                         )
                     ),
                     cursorBrush = SolidColor(Color(0xFFD2691E)),
