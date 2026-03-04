@@ -149,19 +149,17 @@ fun deserializeLineAlignments(json: String): Map<Int, TextAlign> {
 /**
  * VisualTransformation that applies:
  * 1. Per-character formatting via SpanStyle (bold, italic, etc.)
- * 2. Per-line alignment via ParagraphStyle
+ * 2. Per-line alignment via ParagraphStyle (textAlign ONLY)
  *
- * CRITICAL: ParagraphStyle MUST set lineHeight + lineHeightStyle to EXACTLY match
- * the TextStyle on BasicTextField. Otherwise Compose creates separate paragraph blocks
- * with different spacing, causing text to jump when pressing Enter.
- * Using Trim.None ensures every paragraph behaves identically.
+ * CRITICAL: ParagraphStyle must NOT set lineHeight or lineHeightStyle!
+ * Setting lineHeight in ParagraphStyle DOUBLES the effective line spacing.
+ * Instead, ParagraphStyle inherits lineHeight from the TextStyle on BasicTextField.
+ * TextStyle uses Trim.None so creating new paragraphs doesn't change spacing.
  */
 class FormattingTransformation(
     private val formats: List<CharFormat>,
     private val lineAlignments: Map<Int, TextAlign>,
-    private val defaultAlign: TextAlign,
-    private val lineHeightValue: TextUnit = TextUnit.Unspecified,
-    private val lineHeightStyleValue: LineHeightStyle? = null
+    private val defaultAlign: TextAlign
 ) : VisualTransformation {
 
     private fun mapAlign(align: TextAlign): androidx.compose.ui.text.style.TextAlign = when (align) {
@@ -170,12 +168,6 @@ class FormattingTransformation(
         TextAlign.RIGHT -> androidx.compose.ui.text.style.TextAlign.End
         TextAlign.JUSTIFY -> androidx.compose.ui.text.style.TextAlign.Justify
     }
-
-    private fun buildParagraphStyle(align: TextAlign) = ParagraphStyle(
-        textAlign = mapAlign(align),
-        lineHeight = lineHeightValue,
-        lineHeightStyle = lineHeightStyleValue
-    )
 
     override fun filter(text: AnnotatedString): TransformedText {
         val formatted = buildAnnotatedString {
@@ -193,7 +185,7 @@ class FormattingTransformation(
                     }
                 }
             }
-            // Apply per-line ParagraphStyle (textAlign + matching lineHeight to prevent paragraph spacing jumps)
+            // Apply per-line ParagraphStyle (textAlign ONLY — inherits lineHeight from TextStyle)
             if (text.isNotEmpty()) {
                 val str = text.text
                 var lineIdx = 0
@@ -201,7 +193,7 @@ class FormattingTransformation(
                 for (pos in str.indices) {
                     if (str[pos] == '\n') {
                         val align = lineAlignments[lineIdx] ?: defaultAlign
-                        addStyle(buildParagraphStyle(align), lineStart, pos + 1)
+                        addStyle(ParagraphStyle(textAlign = mapAlign(align)), lineStart, pos + 1)
                         lineStart = pos + 1
                         lineIdx++
                     }
@@ -209,7 +201,7 @@ class FormattingTransformation(
                 // Last line (no trailing \n)
                 if (lineStart <= str.lastIndex) {
                     val align = lineAlignments[lineIdx] ?: defaultAlign
-                    addStyle(buildParagraphStyle(align), lineStart, str.length)
+                    addStyle(ParagraphStyle(textAlign = mapAlign(align)), lineStart, str.length)
                 }
             }
         }
@@ -387,17 +379,11 @@ fun EditorScreen(
         composition = contentComposition
     )
 
-    // Shared lineHeightStyle — MUST be identical in TextStyle AND ParagraphStyle
-    val contentLineHeightStyle = LineHeightStyle(
-        alignment = LineHeightStyle.Alignment.Bottom,
-        trim = LineHeightStyle.Trim.None
-    )
-
     // Formatting via VisualTransformation (SpanStyle + ParagraphStyle for per-line alignment)
     val formatsSnapshot = remember(formatVersion) { charFormats.toList() }
     val lineAlignSnapshot = remember(alignVersion) { lineAlignments.toMap() }
-    val contentVisualTransformation = remember(formatsSnapshot, lineAlignSnapshot, textAlign, lineHeightSp) {
-        FormattingTransformation(formatsSnapshot, lineAlignSnapshot, textAlign, lineHeightSp, contentLineHeightStyle)
+    val contentVisualTransformation = remember(formatsSnapshot, lineAlignSnapshot, textAlign) {
+        FormattingTransformation(formatsSnapshot, lineAlignSnapshot, textAlign)
     }
 
     // Current cursor line index for UI (alignment icon, button highlight)
@@ -830,7 +816,10 @@ fun EditorScreen(
                         color = contentFontColor,
                         lineHeight = lineHeightSp,
                         platformStyle = PlatformTextStyle(includeFontPadding = false),
-                        lineHeightStyle = contentLineHeightStyle
+                        lineHeightStyle = LineHeightStyle(
+                            alignment = LineHeightStyle.Alignment.Bottom,
+                            trim = LineHeightStyle.Trim.None
+                        )
                     ),
                     cursorBrush = SolidColor(Color(0xFFD2691E)),
                     modifier = Modifier
