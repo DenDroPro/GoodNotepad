@@ -147,17 +147,27 @@ fun deserializeLineAlignments(json: String): Map<Int, TextAlign> {
 }
 
 /**
- * VisualTransformation that applies per-character formatting via SpanStyle.
- * NO ParagraphStyle — ParagraphStyle in BasicTextField fundamentally breaks
- * text layout (causes jumps, double spacing, misalignment with grid lines).
- * Alignment is handled via textStyle.textAlign on BasicTextField instead.
+ * VisualTransformation that applies per-character formatting (SpanStyle)
+ * AND per-line alignment (ParagraphStyle with textAlign only).
+ * ParagraphStyle does NOT set lineHeight (TextStyle handles that to avoid doubling).
+ * Grid lines are drawn from TextLayoutResult to match actual text positions.
  */
 class FormattingTransformation(
-    private val formats: List<CharFormat>
+    private val formats: List<CharFormat>,
+    private val lineAlignments: Map<Int, TextAlign>,
+    private val defaultAlign: TextAlign
 ) : VisualTransformation {
+    private fun mapAlign(align: TextAlign): androidx.compose.ui.text.style.TextAlign = when (align) {
+        TextAlign.LEFT -> androidx.compose.ui.text.style.TextAlign.Start
+        TextAlign.CENTER -> androidx.compose.ui.text.style.TextAlign.Center
+        TextAlign.RIGHT -> androidx.compose.ui.text.style.TextAlign.End
+        TextAlign.JUSTIFY -> androidx.compose.ui.text.style.TextAlign.Justify
+    }
+
     override fun filter(text: AnnotatedString): TransformedText {
         val formatted = buildAnnotatedString {
             append(text)
+            // SpanStyle for character formatting (bold, italic, etc.)
             if (formats.isNotEmpty()) {
                 val defaultFmt = CharFormat()
                 var i = 0
@@ -168,6 +178,25 @@ class FormattingTransformation(
                     if (fmt != defaultFmt) {
                         addStyle(fmt.toSpanStyle(), start, i)
                     }
+                }
+            }
+            // ParagraphStyle for per-line alignment (textAlign only, no lineHeight)
+            val str = text.text
+            if (str.isNotEmpty()) {
+                var lineIdx = 0
+                var lineStart = 0
+                for (pos in str.indices) {
+                    if (str[pos] == '\n') {
+                        val align = lineAlignments[lineIdx] ?: defaultAlign
+                        addStyle(ParagraphStyle(textAlign = mapAlign(align)), lineStart, pos + 1)
+                        lineIdx++
+                        lineStart = pos + 1
+                    }
+                }
+                // Last line (may not end with \n)
+                if (lineStart < str.length) {
+                    val align = lineAlignments[lineIdx] ?: defaultAlign
+                    addStyle(ParagraphStyle(textAlign = mapAlign(align)), lineStart, str.length)
                 }
             }
         }
@@ -197,9 +226,8 @@ fun EditorScreen(
 
     // State
     var titleText by remember { mutableStateOf("") }
-    var contentText by remember { mutableStateOf("") }
-    var contentSelection by remember { mutableStateOf(TextRange.Zero) }
-    var contentComposition by remember { mutableStateOf<TextRange?>(null) }
+    // Single TextFieldValue state — atomic updates prevent IME word duplication
+    var contentValue by remember { mutableStateOf(TextFieldValue("")) }
     var noteTheme by remember { mutableStateOf(NoteTheme.WHITE) }
     var pageStyle by remember { mutableStateOf(PageStyle.LINED) }
     var headerColor by remember { mutableStateOf(HeaderColor.NONE) }
@@ -226,7 +254,7 @@ fun EditorScreen(
     var undoVersion by remember { mutableIntStateOf(0) }
 
     fun pushUndo() {
-        undoStack.add(UndoSnapshot(contentText, contentSelection, charFormats.toList(), lineAlignments.toMap()))
+        undoStack.add(UndoSnapshot(contentValue.text, contentValue.selection, charFormats.toList(), lineAlignments.toMap()))
         if (undoStack.size > 50) undoStack.removeAt(0)
         redoStack.clear()
         undoVersion++
@@ -234,10 +262,9 @@ fun EditorScreen(
 
     fun performUndo() {
         if (undoStack.isEmpty()) return
-        redoStack.add(UndoSnapshot(contentText, contentSelection, charFormats.toList(), lineAlignments.toMap()))
+        redoStack.add(UndoSnapshot(contentValue.text, contentValue.selection, charFormats.toList(), lineAlignments.toMap()))
         val snap = undoStack.removeAt(undoStack.lastIndex)
-        contentText = snap.text
-        contentSelection = snap.selection
+        contentValue = TextFieldValue(snap.text, snap.selection)
         charFormats.clear()
         charFormats.addAll(snap.formats)
         lineAlignments.clear()
@@ -249,10 +276,9 @@ fun EditorScreen(
 
     fun performRedo() {
         if (redoStack.isEmpty()) return
-        undoStack.add(UndoSnapshot(contentText, contentSelection, charFormats.toList(), lineAlignments.toMap()))
+        undoStack.add(UndoSnapshot(contentValue.text, contentValue.selection, charFormats.toList(), lineAlignments.toMap()))
         val snap = redoStack.removeAt(redoStack.lastIndex)
-        contentText = snap.text
-        contentSelection = snap.selection
+        contentValue = TextFieldValue(snap.text, snap.selection)
         charFormats.clear()
         charFormats.addAll(snap.formats)
         lineAlignments.clear()
@@ -266,7 +292,7 @@ fun EditorScreen(
     LaunchedEffect(noteId) {
         initialized = false
         titleText = ""
-        contentText = ""
+        contentValue = TextFieldValue("")
         charFormats.clear()
         lineAlignments.clear()
         undoStack.clear()
@@ -279,8 +305,7 @@ fun EditorScreen(
         val loadedNote = viewModel.currentNote.first { it != null && it.id == noteId }
         if (loadedNote != null && !initialized) {
             titleText = loadedNote.title
-            contentText = loadedNote.content
-            contentSelection = TextRange(loadedNote.content.length)
+            contentValue = TextFieldValue(loadedNote.content, TextRange(loadedNote.content.length))
             charFormats.clear()
             charFormats.addAll(deserializeFormats(loadedNote.formatting, loadedNote.content.length))
             lineAlignments.clear()
@@ -302,11 +327,11 @@ fun EditorScreen(
     }
 
     // Save note when state changes
-    LaunchedEffect(titleText, contentText, textAlign, titleTextAlign, pageStyle, noteTheme, headerColor, fontSize, noteLineOpacity, formatVersion, alignVersion, titleFontColorArgb, contentFontColorArgb) {
+    LaunchedEffect(titleText, contentValue.text, textAlign, titleTextAlign, pageStyle, noteTheme, headerColor, fontSize, noteLineOpacity, formatVersion, alignVersion, titleFontColorArgb, contentFontColorArgb) {
         if (initialized) {
             note?.let {
                 viewModel.saveNote(it.copy(
-                    title = titleText, content = contentText, preview = contentText.take(100),
+                    title = titleText, content = contentValue.text, preview = contentValue.text.take(100),
                     formatting = serializeFormats(charFormats),
                     lineAlignments = serializeLineAlignments(lineAlignments),
                     titleFontColor = titleFontColorArgb,
@@ -338,23 +363,17 @@ fun EditorScreen(
     }
     val lineHeightSp = (fontSize * 1.5f).sp
 
-    // Plain TextFieldValue
-    val displayValue = TextFieldValue(
-        text = contentText,
-        selection = contentSelection,
-        composition = contentComposition
-    )
-
-    // Formatting via VisualTransformation (SpanStyle only — no ParagraphStyle)
+    // Formatting via VisualTransformation (SpanStyle + ParagraphStyle for alignment)
     val formatsSnapshot = remember(formatVersion) { charFormats.toList() }
-    val contentVisualTransformation = remember(formatsSnapshot) {
-        FormattingTransformation(formatsSnapshot)
+    val lineAlignSnapshot = remember(alignVersion) { lineAlignments.toMap() }
+    val contentVisualTransformation = remember(formatsSnapshot, lineAlignSnapshot, textAlign) {
+        FormattingTransformation(formatsSnapshot, lineAlignSnapshot, textAlign)
     }
 
     // Current cursor line index for UI (alignment icon, button highlight)
-    val currentLineIdx = remember(contentSelection, contentText) {
-        val cp = contentSelection.start.coerceIn(0, contentText.length)
-        contentText.substring(0, cp).count { it == '\n' }
+    val currentLineIdx = remember(contentValue.selection, contentValue.text) {
+        val cp = contentValue.selection.start.coerceIn(0, contentValue.text.length)
+        contentValue.text.substring(0, cp).count { it == '\n' }
     }
     val effectiveTextAlign = lineAlignments[currentLineIdx] ?: textAlign
     val alignIcon = when (effectiveTextAlign) {
@@ -363,20 +382,12 @@ fun EditorScreen(
         TextAlign.RIGHT -> Icons.Default.FormatAlignRight
         TextAlign.JUSTIFY -> Icons.Default.FormatAlignJustify
     }
-    // Map our enum to Compose textAlign for TextStyle (dynamic, follows cursor line)
-    val composeTextAlign = when (effectiveTextAlign) {
-        TextAlign.LEFT -> androidx.compose.ui.text.style.TextAlign.Start
-        TextAlign.CENTER -> androidx.compose.ui.text.style.TextAlign.Center
-        TextAlign.RIGHT -> androidx.compose.ui.text.style.TextAlign.End
-        TextAlign.JUSTIFY -> androidx.compose.ui.text.style.TextAlign.Justify
-    }
-
     // Track programmatic text changes
     var isInternalChange by remember { mutableStateOf(false) }
 
     fun onContentChange(newValue: TextFieldValue) {
         if (isInternalChange) return
-        val oldText = contentText
+        val oldText = contentValue.text
         val newText = newValue.text
         if (newText != oldText) {
             pushUndo()
@@ -389,15 +400,13 @@ fun EditorScreen(
                 val deletePos = newValue.selection.start.coerceIn(0, charFormats.size)
                 repeat(deleteLen) { if (deletePos < charFormats.size) charFormats.removeAt(deletePos) }
             }
-            contentText = newText
             formatVersion++
         }
-        contentSelection = newValue.selection
-        contentComposition = newValue.composition
+        contentValue = newValue  // Single atomic update — text + selection + composition
     }
 
     fun toggleFmt(getter: (CharFormat) -> Boolean, setter: (CharFormat, Boolean) -> CharFormat) {
-        val sel = contentSelection
+        val sel = contentValue.selection
         if (!sel.collapsed && sel.min < charFormats.size) {
             val end = sel.max.coerceAtMost(charFormats.size)
             val allHave = (sel.min until end).all { getter(charFormats[it]) }
@@ -413,7 +422,7 @@ fun EditorScreen(
     fun toggleStrikethrough() = toggleFmt({ it.strikethrough }, { f, v -> f.copy(strikethrough = v) })
 
     fun applyHighlight(color: HighlightColor) {
-        val sel = contentSelection
+        val sel = contentValue.selection
         if (!sel.collapsed && sel.min < charFormats.size) {
             val end = sel.max.coerceAtMost(charFormats.size)
             for (i in sel.min until end) { charFormats[i] = charFormats[i].copy(highlightColor = color) }
@@ -422,22 +431,22 @@ fun EditorScreen(
     }
 
     val isBoldActive = run {
-        val sel = contentSelection
+        val sel = contentValue.selection
         if (!sel.collapsed && sel.min < charFormats.size) (sel.min until sel.max.coerceAtMost(charFormats.size)).all { charFormats.getOrNull(it)?.bold == true }
         else activeFormat.bold
     }
     val isItalicActive = run {
-        val sel = contentSelection
+        val sel = contentValue.selection
         if (!sel.collapsed && sel.min < charFormats.size) (sel.min until sel.max.coerceAtMost(charFormats.size)).all { charFormats.getOrNull(it)?.italic == true }
         else activeFormat.italic
     }
     val isUnderlineActive = run {
-        val sel = contentSelection
+        val sel = contentValue.selection
         if (!sel.collapsed && sel.min < charFormats.size) (sel.min until sel.max.coerceAtMost(charFormats.size)).all { charFormats.getOrNull(it)?.underline == true }
         else activeFormat.underline
     }
     val isStrikethroughActive = run {
-        val sel = contentSelection
+        val sel = contentValue.selection
         if (!sel.collapsed && sel.min < charFormats.size) (sel.min until sel.max.coerceAtMost(charFormats.size)).all { charFormats.getOrNull(it)?.strikethrough == true }
         else activeFormat.strikethrough
     }
@@ -508,8 +517,8 @@ fun EditorScreen(
                                 Row(modifier = Modifier.padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                                     // Per-line alignment: sets alignment for current line + updates global textAlign for rendering
                                     fun setLineAlign(align: TextAlign) {
-                                        val startIdx = contentText.substring(0, contentSelection.start.coerceIn(0, contentText.length)).count { it == '\n' }
-                                        val endIdx = contentText.substring(0, contentSelection.end.coerceIn(0, contentText.length)).count { it == '\n' }
+                                        val startIdx = contentValue.text.substring(0, contentValue.selection.start.coerceIn(0, contentValue.text.length)).count { it == '\n' }
+                                        val endIdx = contentValue.text.substring(0, contentValue.selection.end.coerceIn(0, contentValue.text.length)).count { it == '\n' }
                                         for (li in startIdx..endIdx) { lineAlignments[li] = align }
                                         textAlign = align
                                         alignVersion++
@@ -524,7 +533,7 @@ fun EditorScreen(
                             }
                         }
                         IconButton(onClick = {
-                            val sendIntent = Intent().apply { action = Intent.ACTION_SEND; putExtra(Intent.EXTRA_TEXT, "$titleText\n\n$contentText"); type = "text/plain" }
+                            val sendIntent = Intent().apply { action = Intent.ACTION_SEND; putExtra(Intent.EXTRA_TEXT, "$titleText\n\n${contentValue.text}"); type = "text/plain" }
                             context.startActivity(Intent.createChooser(sendIntent, "\u041f\u043e\u0434\u0435\u043b\u0438\u0442\u044c\u0441\u044f"))
                         }, modifier = Modifier.size(40.dp)) {
                             Icon(Icons.Default.Share, contentDescription = "\u041f\u043e\u0434\u0435\u043b\u0438\u0442\u044c\u0441\u044f", tint = AppTitle, modifier = Modifier.size(20.dp))
@@ -609,13 +618,14 @@ fun EditorScreen(
                     }
                     IconButton(onClick = {
                         pushUndo()
-                        val nl = if (contentText.endsWith("\n") || contentText.isEmpty()) "" else "\n"
+                        val ct = contentValue.text
+                        val nl = if (ct.endsWith("\n") || ct.isEmpty()) "" else "\n"
                         val ins = nl + "\u2022 "
-                        val pos = contentSelection.start.coerceIn(0, contentText.length)
+                        val pos = contentValue.selection.start.coerceIn(0, ct.length)
                         isInternalChange = true
-                        contentText = contentText.substring(0, pos) + ins + contentText.substring(pos)
+                        val newT = ct.substring(0, pos) + ins + ct.substring(pos)
                         repeat(ins.length) { charFormats.add(pos.coerceIn(0, charFormats.size), CharFormat()) }
-                        contentSelection = TextRange(pos + ins.length)
+                        contentValue = TextFieldValue(newT, TextRange(pos + ins.length))
                         formatVersion++
                         isInternalChange = false
                     }, modifier = Modifier.size(40.dp)) {
@@ -623,8 +633,9 @@ fun EditorScreen(
                     }
                     IconButton(onClick = {
                         pushUndo()
-                        val pos = contentSelection.start.coerceIn(0, contentText.length)
-                        val textBefore = contentText.substring(0, pos)
+                        val ct2 = contentValue.text
+                        val pos = contentValue.selection.start.coerceIn(0, ct2.length)
+                        val textBefore = ct2.substring(0, pos)
                         val paragraphLines = textBefore.split("\n")
                         var lastNum = 0
                         for (i in paragraphLines.indices.reversed()) {
@@ -636,12 +647,12 @@ fun EditorScreen(
                                 break
                             }
                         }
-                        val nl = if (textBefore.endsWith("\n") || contentText.isEmpty()) "" else "\n"
+                        val nl = if (textBefore.endsWith("\n") || ct2.isEmpty()) "" else "\n"
                         val ins = nl + "${lastNum + 1}. "
                         isInternalChange = true
-                        contentText = contentText.substring(0, pos) + ins + contentText.substring(pos)
+                        val newT2 = ct2.substring(0, pos) + ins + ct2.substring(pos)
                         repeat(ins.length) { charFormats.add(pos.coerceIn(0, charFormats.size), CharFormat()) }
-                        contentSelection = TextRange(pos + ins.length)
+                        contentValue = TextFieldValue(newT2, TextRange(pos + ins.length))
                         formatVersion++
                         isInternalChange = false
                     }, modifier = Modifier.size(40.dp)) {
@@ -649,13 +660,14 @@ fun EditorScreen(
                     }
                     IconButton(onClick = {
                         pushUndo()
-                        val nl = if (contentText.endsWith("\n") || contentText.isEmpty()) "" else "\n"
+                        val ct3 = contentValue.text
+                        val nl = if (ct3.endsWith("\n") || ct3.isEmpty()) "" else "\n"
                         val ins = nl + "\u2500".repeat(separatorCharCount) + "\n"
-                        val pos = contentSelection.start.coerceIn(0, contentText.length)
+                        val pos = contentValue.selection.start.coerceIn(0, ct3.length)
                         isInternalChange = true
-                        contentText = contentText.substring(0, pos) + ins + contentText.substring(pos)
+                        val newT3 = ct3.substring(0, pos) + ins + ct3.substring(pos)
                         repeat(ins.length) { charFormats.add(pos.coerceIn(0, charFormats.size), CharFormat()) }
-                        contentSelection = TextRange(pos + ins.length)
+                        contentValue = TextFieldValue(newT3, TextRange(pos + ins.length))
                         formatVersion++
                         isInternalChange = false
                     }, modifier = Modifier.size(40.dp)) {
@@ -713,11 +725,13 @@ fun EditorScreen(
                     .fillMaxWidth()
                     .defaultMinSize(minHeight = screenHeightDp.dp)
             ) {
-                // UNIFORM grid drawing layer — uses fixed lineHeight spacing
-                // Does NOT depend on textLayoutResult to avoid mismatch between text and empty lines
+                // Adaptive grid: draws lines at actual text line positions from TextLayoutResult.
+                // This ensures grid always matches text regardless of ParagraphStyle spacing.
+                // Falls back to fixed intervals below the text or when layout is unavailable.
                 val lineColor = Color.Black.copy(alpha = noteLineOpacity)
                 val currentPageStyle = pageStyle
                 val lhSp = lineHeightSp
+                val currentLayout = textLayoutResult
 
                 Box(
                     modifier = Modifier
@@ -726,20 +740,37 @@ fun EditorScreen(
                             val lhPx = lhSp.toPx()
                             val padTopPx = 8.dp.toPx()
 
-                            // Start first grid line at padTopPx + lhPx (bottom of first text line)
+                            // Collect Y positions for horizontal grid lines
+                            val yPositions = mutableListOf<Float>()
+                            if (currentLayout != null && currentLayout.lineCount > 0) {
+                                // Use actual text line bottom positions (offset by padding)
+                                for (li in 0 until currentLayout.lineCount) {
+                                    yPositions.add(padTopPx + currentLayout.getLineBottom(li))
+                                }
+                                // Continue with fixed intervals below last text line
+                                var y = yPositions.last() + lhPx
+                                while (y < size.height) {
+                                    yPositions.add(y)
+                                    y += lhPx
+                                }
+                            } else {
+                                // Fallback: fixed intervals when no layout available
+                                var y = padTopPx + lhPx
+                                while (y < size.height) {
+                                    yPositions.add(y)
+                                    y += lhPx
+                                }
+                            }
+
                             when (currentPageStyle) {
                                 PageStyle.LINED -> {
-                                    var y = padTopPx + lhPx
-                                    while (y < size.height) {
+                                    for (y in yPositions) {
                                         drawLine(lineColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 0.8f)
-                                        y += lhPx
                                     }
                                 }
                                 PageStyle.GRID -> {
-                                    var y = padTopPx + lhPx
-                                    while (y < size.height) {
+                                    for (y in yPositions) {
                                         drawLine(lineColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 0.5f)
-                                        y += lhPx
                                     }
                                     var x = lhPx
                                     while (x < size.width) {
@@ -749,14 +780,12 @@ fun EditorScreen(
                                 }
                                 PageStyle.DOTTED -> {
                                     val dotColor = Color.Black.copy(alpha = (noteLineOpacity * 1.5f).coerceAtMost(1f))
-                                    var y = padTopPx + lhPx
-                                    while (y < size.height) {
+                                    for (y in yPositions) {
                                         var x = lhPx
                                         while (x < size.width) {
                                             drawCircle(dotColor, radius = 1.5f, center = Offset(x, y))
                                             x += lhPx
                                         }
-                                        y += lhPx
                                     }
                                 }
                                 PageStyle.BLANK -> {}
@@ -765,7 +794,7 @@ fun EditorScreen(
                 )
 
                 // Text input placeholder
-                if (contentText.isEmpty()) {
+                if (contentValue.text.isEmpty()) {
                     Text(
                         "\u041d\u0430\u0447\u043d\u0438\u0442\u0435 \u043f\u0438\u0441\u0430\u0442\u044c...",
                         style = TextStyle(
@@ -779,7 +808,7 @@ fun EditorScreen(
                     )
                 }
                 BasicTextField(
-                    value = displayValue,
+                    value = contentValue,
                     onValueChange = { onContentChange(it) },
                     onTextLayout = { layoutResult -> textLayoutResult = layoutResult },
                     visualTransformation = contentVisualTransformation,
@@ -787,7 +816,6 @@ fun EditorScreen(
                         fontSize = fontSize.sp,
                         color = contentFontColor,
                         lineHeight = lineHeightSp,
-                        textAlign = composeTextAlign,
                         platformStyle = PlatformTextStyle(includeFontPadding = false),
                         lineHeightStyle = LineHeightStyle(
                             alignment = LineHeightStyle.Alignment.Bottom,
