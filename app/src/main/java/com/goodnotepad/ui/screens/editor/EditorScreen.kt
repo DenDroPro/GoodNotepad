@@ -469,12 +469,20 @@ fun EditorScreen(
                                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                                 Text("\u0412\u044b\u0440\u0430\u0432\u043d\u0438\u0432\u0430\u043d\u0438\u0435 \u0442\u0435\u043a\u0441\u0442\u0430", fontSize = 12.sp, color = Color(0xFF888888), modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
                                 Row(modifier = Modifier.padding(horizontal = 8.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                                    // Per-line alignment: sets alignment for current line + updates global textAlign for rendering
+                                    // Per-line alignment: freezes existing lines then sets selected line(s)
                                     fun setLineAlign(align: TextAlign) {
-                                        val startIdx = contentValue.text.substring(0, contentValue.selection.start.coerceIn(0, contentValue.text.length)).count { it == '\n' }
-                                        val endIdx = contentValue.text.substring(0, contentValue.selection.end.coerceIn(0, contentValue.text.length)).count { it == '\n' }
+                                        val txt = contentValue.text
+                                        val totalLines = txt.count { it == '\n' } + 1
+                                        val oldDefault = textAlign
+                                        // Freeze all existing lines to their current alignment
+                                        for (li in 0 until totalLines) {
+                                            if (li !in lineAlignments) lineAlignments[li] = oldDefault
+                                        }
+                                        // Set selected line(s) to new alignment
+                                        val startIdx = txt.substring(0, contentValue.selection.start.coerceIn(0, txt.length)).count { it == '\n' }
+                                        val endIdx = txt.substring(0, contentValue.selection.end.coerceIn(0, txt.length)).count { it == '\n' }
                                         for (li in startIdx..endIdx) { lineAlignments[li] = align }
-                                        textAlign = align
+                                        textAlign = align // default for NEW lines only
                                         alignVersion++
                                         showAlignMenu = false
                                     }
@@ -677,7 +685,7 @@ fun EditorScreen(
             // Fixes: per-line alignment (AlignmentSpan), grid sync (same Layout),
             //        no word duplication (native IME), text always on lines.
             val currentFontSize = fontSize
-            val currentLineHeight = fontSize * 1.5f
+            val currentLineHeightMult = 1.5f
             val currentTextColor = contentFontColor.toArgb()
             val currentPageStyle = pageStyle
             val currentLineOpacity = noteLineOpacity
@@ -787,8 +795,7 @@ fun EditorScreen(
                         setPadding(pad15, pad8, pad15, pad8)
                         setTextSize(TypedValue.COMPLEX_UNIT_SP, currentFontSize.toFloat())
                         setTextColor(currentTextColor)
-                        val lineSpExtra = (currentFontSize * 0.5f) * scaledDensity
-                        setLineSpacing(lineSpExtra, 1.0f)
+                        setLineSpacing(0f, 1.5f)
                         gravity = Gravity.TOP or Gravity.START
                         minHeight = ctx.resources.displayMetrics.heightPixels
                         isSingleLine = false
@@ -845,11 +852,11 @@ fun EditorScreen(
                         isUpdatingFromCompose = false
                     }
 
-                    // 2. Update text appearance
+                    // 2. Update text appearance (only when font settings change)
                     editText.setTextSize(TypedValue.COMPLEX_UNIT_SP, currentFontSize.toFloat())
                     editText.setTextColor(currentTextColor)
-                    val sd = editText.resources.displayMetrics.scaledDensity
-                    editText.setLineSpacing((currentFontSize * 0.5f) * sd, 1.0f)
+                    // Line spacing: use multiplier only (no extra), avoids height jumps
+                    editText.setLineSpacing(0f, 1.5f)
 
                     // 3. Apply character formatting spans
                     val editable = editText.text ?: return@AndroidView
@@ -925,7 +932,7 @@ fun EditorScreen(
                                 PageStyle.BLANK -> 0; PageStyle.LINED -> 1; PageStyle.GRID -> 2; PageStyle.DOTTED -> 3
                             }) }
                             cls.getDeclaredField("gridLineOpacity").apply { isAccessible = true; setFloat(gridET, currentLineOpacity) }
-                            cls.getDeclaredField("gridLineHeight").apply { isAccessible = true; setFloat(gridET, currentLineHeight * editText.resources.displayMetrics.scaledDensity) }
+                            cls.getDeclaredField("gridLineHeight").apply { isAccessible = true; setFloat(gridET, editText.lineHeight.toFloat()) }
                         } catch (_: Exception) {}
                     }
                     editText.invalidate()
