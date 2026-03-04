@@ -47,6 +47,20 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.content.Intent
+import android.graphics.Canvas
+import android.graphics.Typeface
+import android.text.InputType
+import android.text.Spannable
+import android.text.TextWatcher
+import android.text.style.AlignmentSpan
+import android.text.style.BackgroundColorSpan
+import android.text.style.StrikethroughSpan
+import android.text.style.StyleSpan
+import android.text.style.UnderlineSpan
+import android.util.TypedValue
+import android.view.Gravity
+import android.widget.EditText
+import androidx.compose.ui.viewinterop.AndroidView
 import com.goodnotepad.data.*
 import com.goodnotepad.ui.NoteViewModel
 import com.goodnotepad.ui.screens.home.AppHeader
@@ -146,63 +160,7 @@ fun deserializeLineAlignments(json: String): Map<Int, TextAlign> {
     return result
 }
 
-/**
- * VisualTransformation that applies per-character formatting (SpanStyle)
- * AND per-line alignment (ParagraphStyle with textAlign only).
- * ParagraphStyle does NOT set lineHeight (TextStyle handles that to avoid doubling).
- * Grid lines are drawn from TextLayoutResult to match actual text positions.
- */
-class FormattingTransformation(
-    private val formats: List<CharFormat>,
-    private val lineAlignments: Map<Int, TextAlign>,
-    private val defaultAlign: TextAlign
-) : VisualTransformation {
-    private fun mapAlign(align: TextAlign): androidx.compose.ui.text.style.TextAlign = when (align) {
-        TextAlign.LEFT -> androidx.compose.ui.text.style.TextAlign.Start
-        TextAlign.CENTER -> androidx.compose.ui.text.style.TextAlign.Center
-        TextAlign.RIGHT -> androidx.compose.ui.text.style.TextAlign.End
-        TextAlign.JUSTIFY -> androidx.compose.ui.text.style.TextAlign.Justify
-    }
-
-    override fun filter(text: AnnotatedString): TransformedText {
-        val formatted = buildAnnotatedString {
-            append(text)
-            // SpanStyle for character formatting (bold, italic, etc.)
-            if (formats.isNotEmpty()) {
-                val defaultFmt = CharFormat()
-                var i = 0
-                while (i < text.length && i < formats.size) {
-                    val fmt = formats[i]
-                    val start = i
-                    while (i < text.length && i < formats.size && formats[i] == fmt) i++
-                    if (fmt != defaultFmt) {
-                        addStyle(fmt.toSpanStyle(), start, i)
-                    }
-                }
-            }
-            // ParagraphStyle for per-line alignment (textAlign only, no lineHeight)
-            val str = text.text
-            if (str.isNotEmpty()) {
-                var lineIdx = 0
-                var lineStart = 0
-                for (pos in str.indices) {
-                    if (str[pos] == '\n') {
-                        val align = lineAlignments[lineIdx] ?: defaultAlign
-                        addStyle(ParagraphStyle(textAlign = mapAlign(align)), lineStart, pos + 1)
-                        lineIdx++
-                        lineStart = pos + 1
-                    }
-                }
-                // Last line (may not end with \n)
-                if (lineStart < str.length) {
-                    val align = lineAlignments[lineIdx] ?: defaultAlign
-                    addStyle(ParagraphStyle(textAlign = mapAlign(align)), lineStart, str.length)
-                }
-            }
-        }
-        return TransformedText(formatted, OffsetMapping.Identity)
-    }
-}
+// Native EditText is used instead of VisualTransformation for text rendering
 
 // Undo/Redo snapshot
 data class UndoSnapshot(
@@ -246,7 +204,6 @@ fun EditorScreen(
     var alignVersion by remember { mutableIntStateOf(0) }
     var activeFormat by remember { mutableStateOf(CharFormat()) }
 
-    var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
 
     // Undo/Redo stacks
     val undoStack = remember { mutableListOf<UndoSnapshot>() }
@@ -363,12 +320,9 @@ fun EditorScreen(
     }
     val lineHeightSp = (fontSize * 1.5f).sp
 
-    // Formatting via VisualTransformation (SpanStyle + ParagraphStyle for alignment)
-    val formatsSnapshot = remember(formatVersion) { charFormats.toList() }
-    val lineAlignSnapshot = remember(alignVersion) { lineAlignments.toMap() }
-    val contentVisualTransformation = remember(formatsSnapshot, lineAlignSnapshot, textAlign) {
-        FormattingTransformation(formatsSnapshot, lineAlignSnapshot, textAlign)
-    }
+    // EditText reference for native text rendering
+    var editTextRef by remember { mutableStateOf<EditText?>(null) }
+    var isUpdatingFromCompose by remember { mutableStateOf(false) }
 
     // Current cursor line index for UI (alignment icon, button highlight)
     val currentLineIdx = remember(contentValue.selection, contentValue.text) {
@@ -451,14 +405,14 @@ fun EditorScreen(
         else activeFormat.strikethrough
     }
 
-    // Dynamic separator: measure actual text area width using TextMeasurer for accuracy
+    // Dynamic separator: measured from EditText paint in update block
     val density = LocalDensity.current
     var contentAreaWidthPx by remember { mutableIntStateOf(0) }
-    val textMeasurer = rememberTextMeasurer()
     val separatorCharCount = remember(fontSize, contentAreaWidthPx) {
         if (contentAreaWidthPx <= 0) return@remember 40
-        val charWidth = textMeasurer.measure("\u2500", TextStyle(fontSize = fontSize.sp)).size.width
-        if (charWidth > 0) (contentAreaWidthPx / charWidth).coerceIn(10, 300) else 40
+        // Approximate: use scaled density to estimate char width
+        val approxCharWidth = fontSize * 0.6f * density.density
+        if (approxCharWidth > 0) (contentAreaWidthPx / approxCharWidth).toInt().coerceIn(10, 300) else 40
     }
 
     val titleFontColor = Color(titleFontColorArgb)
@@ -719,117 +673,277 @@ fun EditorScreen(
 
             HorizontalDivider(modifier = Modifier.padding(horizontal = 15.dp), color = Color(0x20000000))
 
-            // === CONTENT ===
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .defaultMinSize(minHeight = screenHeightDp.dp)
-            ) {
-                // Adaptive grid: draws lines at actual text line positions from TextLayoutResult.
-                // This ensures grid always matches text regardless of ParagraphStyle spacing.
-                // Falls back to fixed intervals below the text or when layout is unavailable.
-                val lineColor = Color.Black.copy(alpha = noteLineOpacity)
-                val currentPageStyle = pageStyle
-                val lhSp = lineHeightSp
-                val currentLayout = textLayoutResult
+            // === CONTENT — Native Android EditText via AndroidView ===
+            // Fixes: per-line alignment (AlignmentSpan), grid sync (same Layout),
+            //        no word duplication (native IME), text always on lines.
+            val currentFontSize = fontSize
+            val currentLineHeight = fontSize * 1.5f
+            val currentTextColor = contentFontColor.toArgb()
+            val currentPageStyle = pageStyle
+            val currentLineOpacity = noteLineOpacity
+            val currentFormatVersion = formatVersion
+            val currentAlignVersion = alignVersion
+            val currentDefaultAlign = textAlign
+            val currentFormats = charFormats
+            val currentLineAligns = lineAlignments
 
-                Box(
-                    modifier = Modifier
-                        .matchParentSize()
-                        .drawBehind {
-                            val lhPx = lhSp.toPx()
-                            val padTopPx = 8.dp.toPx()
+            AndroidView(
+                factory = { ctx ->
+                    val density = ctx.resources.displayMetrics.density
+                    val scaledDensity = ctx.resources.displayMetrics.scaledDensity
+                    val pad15 = (15 * density).toInt()
+                    val pad8 = (8 * density).toInt()
 
-                            // Collect Y positions for horizontal grid lines
-                            val yPositions = mutableListOf<Float>()
-                            if (currentLayout != null && currentLayout.lineCount > 0) {
-                                // Use actual text line bottom positions (offset by padding)
-                                for (li in 0 until currentLayout.lineCount) {
-                                    yPositions.add(padTopPx + currentLayout.getLineBottom(li))
+                    object : EditText(ctx) {
+                        // Grid drawing config (updated from Compose via tags)
+                        var gridPageStyle: Int = 1 // 0=blank, 1=lined, 2=grid, 3=dotted
+                        var gridLineOpacity: Float = 0.5f
+                        var gridLineHeight: Float = 0f // in pixels
+
+                        private val gridPaint = android.graphics.Paint().apply {
+                            isAntiAlias = true
+                            strokeWidth = density * 0.5f
+                        }
+
+                        override fun onDraw(canvas: Canvas) {
+                            // Draw grid BEFORE text so text is on top
+                            val lay = layout
+                            if (lay != null && gridPageStyle != 0) {
+                                gridPaint.color = android.graphics.Color.argb(
+                                    (gridLineOpacity * 255).toInt(), 0, 0, 0
+                                )
+                                val lh = gridLineHeight
+                                if (lh <= 0f) { super.onDraw(canvas); return }
+                                val padTop = compoundPaddingTop.toFloat()
+                                val w = width.toFloat()
+                                val h = height.toFloat()
+
+                                // Collect Y positions from actual text layout
+                                val yPositions = mutableListOf<Float>()
+                                for (i in 0 until lay.lineCount) {
+                                    yPositions.add(padTop + lay.getLineBottom(i).toFloat())
                                 }
-                                // Continue with fixed intervals below last text line
-                                var y = yPositions.last() + lhPx
-                                while (y < size.height) {
+                                // Continue with fixed intervals below text
+                                val lastY = if (yPositions.isNotEmpty()) yPositions.last() else padTop
+                                var y = lastY + lh
+                                while (y < h + scrollY) {
                                     yPositions.add(y)
-                                    y += lhPx
+                                    y += lh
                                 }
-                            } else {
-                                // Fallback: fixed intervals when no layout available
-                                var y = padTopPx + lhPx
-                                while (y < size.height) {
-                                    yPositions.add(y)
-                                    y += lhPx
-                                }
-                            }
 
-                            when (currentPageStyle) {
-                                PageStyle.LINED -> {
-                                    for (y in yPositions) {
-                                        drawLine(lineColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 0.8f)
+                                when (gridPageStyle) {
+                                    1 -> { // LINED
+                                        gridPaint.strokeWidth = density * 0.8f
+                                        for (yy in yPositions) {
+                                            canvas.drawLine(0f, yy, w, yy, gridPaint)
+                                        }
                                     }
-                                }
-                                PageStyle.GRID -> {
-                                    for (y in yPositions) {
-                                        drawLine(lineColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 0.5f)
+                                    2 -> { // GRID
+                                        gridPaint.strokeWidth = density * 0.5f
+                                        for (yy in yPositions) {
+                                            canvas.drawLine(0f, yy, w, yy, gridPaint)
+                                        }
+                                        var x = lh
+                                        while (x < w) {
+                                            canvas.drawLine(x, padTop, x, h + scrollY, gridPaint)
+                                            x += lh
+                                        }
                                     }
-                                    var x = lhPx
-                                    while (x < size.width) {
-                                        drawLine(lineColor, Offset(x, padTopPx), Offset(x, size.height), strokeWidth = 0.5f)
-                                        x += lhPx
-                                    }
-                                }
-                                PageStyle.DOTTED -> {
-                                    val dotColor = Color.Black.copy(alpha = (noteLineOpacity * 1.5f).coerceAtMost(1f))
-                                    for (y in yPositions) {
-                                        var x = lhPx
-                                        while (x < size.width) {
-                                            drawCircle(dotColor, radius = 1.5f, center = Offset(x, y))
-                                            x += lhPx
+                                    3 -> { // DOTTED
+                                        gridPaint.strokeWidth = 0f
+                                        val dotAlpha = (gridLineOpacity * 1.5f).coerceAtMost(1f)
+                                        gridPaint.color = android.graphics.Color.argb(
+                                            (dotAlpha * 255).toInt(), 0, 0, 0
+                                        )
+                                        for (yy in yPositions) {
+                                            var x = lh
+                                            while (x < w) {
+                                                canvas.drawCircle(x, yy, density * 1.5f, gridPaint)
+                                                x += lh
+                                            }
                                         }
                                     }
                                 }
-                                PageStyle.BLANK -> {}
+                            }
+                            super.onDraw(canvas)
+                        }
+
+                        override fun onSelectionChanged(selStart: Int, selEnd: Int) {
+                            super.onSelectionChanged(selStart, selEnd)
+                            if (!isUpdatingFromCompose) {
+                                val txt = text?.toString() ?: ""
+                                contentValue = TextFieldValue(
+                                    txt,
+                                    TextRange(
+                                        selStart.coerceIn(0, txt.length),
+                                        selEnd.coerceIn(0, txt.length)
+                                    )
+                                )
                             }
                         }
-                )
+                    }.apply {
+                        // Basic EditText configuration
+                        setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                        setPadding(pad15, pad8, pad15, pad8)
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, currentFontSize.toFloat())
+                        setTextColor(currentTextColor)
+                        val lineSpExtra = (currentFontSize * 0.5f) * scaledDensity
+                        setLineSpacing(lineSpExtra, 1.0f)
+                        gravity = Gravity.TOP or Gravity.START
+                        minHeight = ctx.resources.displayMetrics.heightPixels
+                        isSingleLine = false
+                        inputType = InputType.TYPE_CLASS_TEXT or
+                            InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                            InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                        includeFontPadding = false
+                        isVerticalScrollBarEnabled = false
+                        overScrollMode = android.view.View.OVER_SCROLL_NEVER
+                        highlightColor = android.graphics.Color.parseColor("#40D2691E")
+                        hint = "\u041d\u0430\u0447\u043d\u0438\u0442\u0435 \u043f\u0438\u0441\u0430\u0442\u044c..."
+                        setHintTextColor(android.graphics.Color.parseColor("#FFBBBBBB"))
 
-                // Text input placeholder
-                if (contentValue.text.isEmpty()) {
-                    Text(
-                        "\u041d\u0430\u0447\u043d\u0438\u0442\u0435 \u043f\u0438\u0441\u0430\u0442\u044c...",
-                        style = TextStyle(
-                            fontSize = fontSize.sp,
-                            color = Color(0xFFBBBBBB),
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Start
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 15.dp, vertical = 8.dp)
-                    )
-                }
-                BasicTextField(
-                    value = contentValue,
-                    onValueChange = { onContentChange(it) },
-                    onTextLayout = { layoutResult -> textLayoutResult = layoutResult },
-                    visualTransformation = contentVisualTransformation,
-                    textStyle = TextStyle(
-                        fontSize = fontSize.sp,
-                        color = contentFontColor,
-                        lineHeight = lineHeightSp,
-                        platformStyle = PlatformTextStyle(includeFontPadding = false),
-                        lineHeightStyle = LineHeightStyle(
-                            alignment = LineHeightStyle.Alignment.Bottom,
-                            trim = LineHeightStyle.Trim.FirstLineTop
-                        )
-                    ),
-                    cursorBrush = SolidColor(Color(0xFFD2691E)),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = screenHeightDp.dp)
-                        .padding(horizontal = 15.dp, vertical = 8.dp)
-                        .onSizeChanged { size -> contentAreaWidthPx = size.width }
-                )
-            }
+                        // Text change listener
+                        addTextChangedListener(object : TextWatcher {
+                            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                            override fun afterTextChanged(s: android.text.Editable?) {
+                                if (isUpdatingFromCompose || s == null) return
+                                val newText = s.toString()
+                                val oldText = contentValue.text
+                                if (newText != oldText) {
+                                    pushUndo()
+                                    // Sync charFormats
+                                    if (newText.length > oldText.length) {
+                                        val insertLen = newText.length - oldText.length
+                                        val insertPos = (selectionStart - insertLen).coerceIn(0, charFormats.size)
+                                        repeat(insertLen) { charFormats.add(insertPos, activeFormat.copy()) }
+                                    } else if (newText.length < oldText.length) {
+                                        val deleteLen = oldText.length - newText.length
+                                        val deletePos = selectionStart.coerceIn(0, charFormats.size)
+                                        repeat(deleteLen) { if (deletePos < charFormats.size) charFormats.removeAt(deletePos) }
+                                    }
+                                    contentValue = TextFieldValue(
+                                        newText,
+                                        TextRange(selectionStart.coerceIn(0, newText.length))
+                                    )
+                                    formatVersion++
+                                }
+                            }
+                        })
+
+                        editTextRef = this
+                    }
+                },
+                update = { editText ->
+                    // 1. Sync text from Compose -> EditText (undo/redo, programmatic changes)
+                    val composeText = contentValue.text
+                    if (editText.text.toString() != composeText) {
+                        isUpdatingFromCompose = true
+                        editText.setText(composeText)
+                        val sel = contentValue.selection.start.coerceIn(0, composeText.length)
+                        if (editText.text.length >= sel) editText.setSelection(sel)
+                        isUpdatingFromCompose = false
+                    }
+
+                    // 2. Update text appearance
+                    editText.setTextSize(TypedValue.COMPLEX_UNIT_SP, currentFontSize.toFloat())
+                    editText.setTextColor(currentTextColor)
+                    val sd = editText.resources.displayMetrics.scaledDensity
+                    editText.setLineSpacing((currentFontSize * 0.5f) * sd, 1.0f)
+
+                    // 3. Apply character formatting spans
+                    val editable = editText.text ?: return@AndroidView
+                    // Remove old formatting spans (not AlignmentSpans yet)
+                    editable.getSpans(0, editable.length, StyleSpan::class.java).forEach { editable.removeSpan(it) }
+                    editable.getSpans(0, editable.length, UnderlineSpan::class.java).forEach { editable.removeSpan(it) }
+                    editable.getSpans(0, editable.length, StrikethroughSpan::class.java).forEach { editable.removeSpan(it) }
+                    editable.getSpans(0, editable.length, BackgroundColorSpan::class.java).forEach { editable.removeSpan(it) }
+
+                    // Trigger re-read of formatVersion
+                    val fv = currentFormatVersion
+                    val defaultFmt = CharFormat()
+                    var ci = 0
+                    while (ci < editable.length && ci < currentFormats.size) {
+                        val fmt = currentFormats[ci]
+                        val start = ci
+                        while (ci < editable.length && ci < currentFormats.size && currentFormats[ci] == fmt) ci++
+                        if (fmt != defaultFmt) {
+                            val flags = Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+                            if (fmt.bold && fmt.italic) {
+                                editable.setSpan(StyleSpan(Typeface.BOLD_ITALIC), start, ci, flags)
+                            } else if (fmt.bold) {
+                                editable.setSpan(StyleSpan(Typeface.BOLD), start, ci, flags)
+                            } else if (fmt.italic) {
+                                editable.setSpan(StyleSpan(Typeface.ITALIC), start, ci, flags)
+                            }
+                            if (fmt.underline) editable.setSpan(UnderlineSpan(), start, ci, flags)
+                            if (fmt.strikethrough) editable.setSpan(StrikethroughSpan(), start, ci, flags)
+                            if (fmt.highlightColor != HighlightColor.NONE) {
+                                val hc = fmt.highlightColor.color.copy(alpha = 0.35f).toArgb()
+                                editable.setSpan(BackgroundColorSpan(hc), start, ci, flags)
+                            }
+                        }
+                    }
+
+                    // 4. Apply per-line alignment spans
+                    editable.getSpans(0, editable.length, AlignmentSpan::class.java).forEach { editable.removeSpan(it) }
+                    val av = currentAlignVersion
+                    val str = editable.toString()
+                    var lineIdx = 0
+                    var lineStart = 0
+                    for (pos in str.indices) {
+                        if (str[pos] == '\n') {
+                            val align = currentLineAligns[lineIdx] ?: currentDefaultAlign
+                            val layoutAlign = when (align) {
+                                TextAlign.LEFT -> android.text.Layout.Alignment.ALIGN_NORMAL
+                                TextAlign.CENTER -> android.text.Layout.Alignment.ALIGN_CENTER
+                                TextAlign.RIGHT -> android.text.Layout.Alignment.ALIGN_OPPOSITE
+                                TextAlign.JUSTIFY -> android.text.Layout.Alignment.ALIGN_NORMAL
+                            }
+                            editable.setSpan(AlignmentSpan.Standard(layoutAlign), lineStart, pos + 1, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                            lineIdx++
+                            lineStart = pos + 1
+                        }
+                    }
+                    if (lineStart < str.length) {
+                        val align = currentLineAligns[lineIdx] ?: currentDefaultAlign
+                        val layoutAlign = when (align) {
+                            TextAlign.LEFT -> android.text.Layout.Alignment.ALIGN_NORMAL
+                            TextAlign.CENTER -> android.text.Layout.Alignment.ALIGN_CENTER
+                            TextAlign.RIGHT -> android.text.Layout.Alignment.ALIGN_OPPOSITE
+                            TextAlign.JUSTIFY -> android.text.Layout.Alignment.ALIGN_NORMAL
+                        }
+                        editable.setSpan(AlignmentSpan.Standard(layoutAlign), lineStart, str.length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    }
+
+                    // 5. Update grid drawing config
+                    val gridET = editText as? EditText
+                    if (gridET != null) {
+                        try {
+                            val cls = gridET.javaClass
+                            cls.getDeclaredField("gridPageStyle").apply { isAccessible = true; setInt(gridET, when(currentPageStyle) {
+                                PageStyle.BLANK -> 0; PageStyle.LINED -> 1; PageStyle.GRID -> 2; PageStyle.DOTTED -> 3
+                            }) }
+                            cls.getDeclaredField("gridLineOpacity").apply { isAccessible = true; setFloat(gridET, currentLineOpacity) }
+                            cls.getDeclaredField("gridLineHeight").apply { isAccessible = true; setFloat(gridET, currentLineHeight * editText.resources.displayMetrics.scaledDensity) }
+                        } catch (_: Exception) {}
+                    }
+                    editText.invalidate()
+
+                    // 6. Measure separator width
+                    val paint = editText.paint
+                    if (paint != null) {
+                        val charW = paint.measureText("\u2500")
+                        val textAreaWidth = editText.width - editText.paddingLeft - editText.paddingRight
+                        if (charW > 0 && textAreaWidth > 0) {
+                            contentAreaWidthPx = textAreaWidth
+                        }
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .defaultMinSize(minHeight = screenHeightDp.dp)
+            )
         }
     }
 
