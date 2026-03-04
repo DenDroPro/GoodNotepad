@@ -40,8 +40,10 @@ import androidx.compose.ui.text.input.OffsetMapping
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.content.Intent
@@ -147,16 +149,34 @@ fun deserializeLineAlignments(json: String): Map<Int, TextAlign> {
 /**
  * VisualTransformation that applies:
  * 1. Per-character formatting via SpanStyle (bold, italic, etc.)
- * 2. Per-line alignment via ParagraphStyle (textAlign ONLY — no lineHeight override!)
+ * 2. Per-line alignment via ParagraphStyle
  *
- * IMPORTANT: ParagraphStyle must NOT set lineHeight or lineSpacing — only textAlign.
- * Setting lineHeight in ParagraphStyle causes jitter and text duplication.
+ * CRITICAL: ParagraphStyle MUST set lineHeight + lineHeightStyle to EXACTLY match
+ * the TextStyle on BasicTextField. Otherwise Compose creates separate paragraph blocks
+ * with different spacing, causing text to jump when pressing Enter.
+ * Using Trim.None ensures every paragraph behaves identically.
  */
 class FormattingTransformation(
     private val formats: List<CharFormat>,
     private val lineAlignments: Map<Int, TextAlign>,
-    private val defaultAlign: TextAlign
+    private val defaultAlign: TextAlign,
+    private val lineHeightValue: TextUnit = TextUnit.Unspecified,
+    private val lineHeightStyleValue: LineHeightStyle? = null
 ) : VisualTransformation {
+
+    private fun mapAlign(align: TextAlign): androidx.compose.ui.text.style.TextAlign = when (align) {
+        TextAlign.LEFT -> androidx.compose.ui.text.style.TextAlign.Start
+        TextAlign.CENTER -> androidx.compose.ui.text.style.TextAlign.Center
+        TextAlign.RIGHT -> androidx.compose.ui.text.style.TextAlign.End
+        TextAlign.JUSTIFY -> androidx.compose.ui.text.style.TextAlign.Justify
+    }
+
+    private fun buildParagraphStyle(align: TextAlign) = ParagraphStyle(
+        textAlign = mapAlign(align),
+        lineHeight = lineHeightValue,
+        lineHeightStyle = lineHeightStyleValue
+    )
+
     override fun filter(text: AnnotatedString): TransformedText {
         val formatted = buildAnnotatedString {
             append(text)
@@ -173,7 +193,7 @@ class FormattingTransformation(
                     }
                 }
             }
-            // Apply per-line ParagraphStyle (textAlign ONLY)
+            // Apply per-line ParagraphStyle (textAlign + matching lineHeight to prevent paragraph spacing jumps)
             if (text.isNotEmpty()) {
                 val str = text.text
                 var lineIdx = 0
@@ -181,13 +201,7 @@ class FormattingTransformation(
                 for (pos in str.indices) {
                     if (str[pos] == '\n') {
                         val align = lineAlignments[lineIdx] ?: defaultAlign
-                        val composeAlign = when (align) {
-                            TextAlign.LEFT -> androidx.compose.ui.text.style.TextAlign.Start
-                            TextAlign.CENTER -> androidx.compose.ui.text.style.TextAlign.Center
-                            TextAlign.RIGHT -> androidx.compose.ui.text.style.TextAlign.End
-                            TextAlign.JUSTIFY -> androidx.compose.ui.text.style.TextAlign.Justify
-                        }
-                        addStyle(ParagraphStyle(textAlign = composeAlign), lineStart, pos + 1)
+                        addStyle(buildParagraphStyle(align), lineStart, pos + 1)
                         lineStart = pos + 1
                         lineIdx++
                     }
@@ -195,13 +209,7 @@ class FormattingTransformation(
                 // Last line (no trailing \n)
                 if (lineStart <= str.lastIndex) {
                     val align = lineAlignments[lineIdx] ?: defaultAlign
-                    val composeAlign = when (align) {
-                        TextAlign.LEFT -> androidx.compose.ui.text.style.TextAlign.Start
-                        TextAlign.CENTER -> androidx.compose.ui.text.style.TextAlign.Center
-                        TextAlign.RIGHT -> androidx.compose.ui.text.style.TextAlign.End
-                        TextAlign.JUSTIFY -> androidx.compose.ui.text.style.TextAlign.Justify
-                    }
-                    addStyle(ParagraphStyle(textAlign = composeAlign), lineStart, str.length)
+                    addStyle(buildParagraphStyle(align), lineStart, str.length)
                 }
             }
         }
@@ -379,11 +387,17 @@ fun EditorScreen(
         composition = contentComposition
     )
 
+    // Shared lineHeightStyle — MUST be identical in TextStyle AND ParagraphStyle
+    val contentLineHeightStyle = LineHeightStyle(
+        alignment = LineHeightStyle.Alignment.Bottom,
+        trim = LineHeightStyle.Trim.None
+    )
+
     // Formatting via VisualTransformation (SpanStyle + ParagraphStyle for per-line alignment)
     val formatsSnapshot = remember(formatVersion) { charFormats.toList() }
     val lineAlignSnapshot = remember(alignVersion) { lineAlignments.toMap() }
-    val contentVisualTransformation = remember(formatsSnapshot, lineAlignSnapshot, textAlign) {
-        FormattingTransformation(formatsSnapshot, lineAlignSnapshot, textAlign)
+    val contentVisualTransformation = remember(formatsSnapshot, lineAlignSnapshot, textAlign, lineHeightSp) {
+        FormattingTransformation(formatsSnapshot, lineAlignSnapshot, textAlign, lineHeightSp, contentLineHeightStyle)
     }
 
     // Current cursor line index for UI (alignment icon, button highlight)
@@ -470,14 +484,14 @@ fun EditorScreen(
         else activeFormat.strikethrough
     }
 
-    // Dynamic separator: measure actual text area width in pixels
+    // Dynamic separator: measure actual text area width using TextMeasurer for accuracy
     val density = LocalDensity.current
     var contentAreaWidthPx by remember { mutableIntStateOf(0) }
-    val separatorCharCount = remember(fontSize, contentAreaWidthPx, density.fontScale) {
+    val textMeasurer = rememberTextMeasurer()
+    val separatorCharCount = remember(fontSize, contentAreaWidthPx) {
         if (contentAreaWidthPx <= 0) return@remember 40
-        // "─" (U+2500) width ≈ 0.5 * fontSize in sp, converted to px
-        val charWidthPx = fontSize * density.fontScale * density.density * 0.5f
-        if (charWidthPx > 0) ((contentAreaWidthPx / charWidthPx).toInt() - 1).coerceIn(10, 300) else 40
+        val charWidth = textMeasurer.measure("\u2500", TextStyle(fontSize = fontSize.sp)).size.width
+        if (charWidth > 0) (contentAreaWidthPx / charWidth).coerceIn(10, 300) else 40
     }
 
     val titleFontColor = Color(titleFontColorArgb)
@@ -816,10 +830,7 @@ fun EditorScreen(
                         color = contentFontColor,
                         lineHeight = lineHeightSp,
                         platformStyle = PlatformTextStyle(includeFontPadding = false),
-                        lineHeightStyle = LineHeightStyle(
-                            alignment = LineHeightStyle.Alignment.Bottom,
-                            trim = LineHeightStyle.Trim.FirstLineTop
-                        )
+                        lineHeightStyle = contentLineHeightStyle
                     ),
                     cursorBrush = SolidColor(Color(0xFFD2691E)),
                     modifier = Modifier
