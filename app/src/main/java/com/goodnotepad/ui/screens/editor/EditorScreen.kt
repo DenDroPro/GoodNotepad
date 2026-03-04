@@ -727,9 +727,11 @@ fun EditorScreen(
                                 val h = height.toFloat()
 
                                 // Fixed-interval grid: all lines at uniform spacing
-                                // This prevents height jumps when Enter is pressed
+                                // Offset by lh/6 to vertically center text between grid lines
+                                // (setLineSpacing multiplier adds extra space below text)
                                 val yPositions = mutableListOf<Float>()
-                                var y = padTop + lh
+                                val gridOffset = lh / 6f
+                                var y = padTop + lh - gridOffset
                                 while (y < h + scrollY) {
                                     yPositions.add(y)
                                     y += lh
